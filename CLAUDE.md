@@ -87,6 +87,28 @@ del Onn (u otro box Android genérico) y en el navegador integrado de al menos u
 TV real, qué versión de Chromium corre debajo, y si el `localStorage`/almacenamiento
 persiste entre reinicios y actualizaciones de firmware.
 
+**Hallazgo de la primera prueba en hardware real (26 julio 2026):** un Smart TV Samsung
+más viejo mostraba pantalla en blanco con el build normal de Vite — el navegador es tan
+antiguo que ni siquiera soporta `<script type="module">` nativo, así que el JS nunca
+llegaba a correr (el navegador ignora el tag silenciosamente, sin error visible). Dato
+de contexto útil: en ese mismo TV, `d.juuno.co` (el competidor validado) tampoco cargó
+(quedó en negro) — confirma que es un techo real de hardware/navegador, no un bug propio.
+
+**Fix aplicado:** se agregó `@vitejs/plugin-legacy` en `vite.config.js` del repo
+`visor-web`, con `targets: ['chrome >= 38', 'safari >= 9']`. Esto genera un bundle
+adicional transpilado a ES5 + polyfills + loader SystemJS, servido vía `<script
+nomodule>` como fallback. Tras esto el visor cargó correctamente en el TV viejo.
+
+- **Ojo con la versión del plugin:** la última versión de `@vitejs/plugin-legacy` (8.x)
+  pide Vite 8 como peer — como el proyecto corre Vite 5.x, hay que fijar la versión del
+  plugin a la misma serie mayor que Vite (`@vitejs/plugin-legacy@5.4.3` en este caso),
+  no instalar "latest" a ciegas.
+- **El fallback legacy solo existe en el build de producción** (`vite build`), nunca en
+  el dev server (`vite dev`). Para probar en hardware real (TV/Onn) siempre hay que usar
+  `pnpm build && pnpm preview --host`, o el deploy real en Vercel (que ya corre `vite
+  build` automáticamente) — nunca el dev server directo.
+- Pendiente: repetir esta misma validación en el box Onn.
+
 ---
 
 ## 4. Backend / Datos
