@@ -100,7 +100,9 @@ watch(currentItem, () => {
     />
     <p v-else-if="error" class="message">{{ error }}</p>
 
-    <div v-if="!fullscreenPrimed" class="fullscreen-prompt" @click="activateFullscreen"></div>
+    <button v-if="!fullscreenPrimed" class="fullscreen-button" @click="activateFullscreen">
+      Pantalla completa
+    </button>
   </div>
 </template>
 
@@ -129,9 +131,17 @@ watch(currentItem, () => {
   padding: 2rem;
 }
 
-.fullscreen-prompt {
+.fullscreen-button {
   position: fixed;
-  inset: 0;
+  top: 1rem;
+  right: 1rem;
+  padding: 0.5rem 1rem;
+  background: #fff;
+  color: #000;
+  border: none;
+  border-radius: 4px;
+  font-family: sans-serif;
+  font-size: 1rem;
   cursor: pointer;
 }
 </style>
