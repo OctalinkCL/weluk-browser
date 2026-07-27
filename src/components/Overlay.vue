@@ -34,18 +34,28 @@ async function disconnect() {
   disconnecting.value = true
   disconnectError.value = null
 
-  const { error } = await supabase
+  // .select() devuelve las filas afectadas: si RLS bloquea el UPDATE, el PATCH
+  // igual responde 204/sin error pero afecta 0 filas — así lo detectamos.
+  const { data, error } = await supabase
     .from('screens')
     .update({ status: 'disconnected', current_playlist_id: null })
     .eq('device_uuid', props.deviceUuid)
+    .select()
 
   if (error) {
     disconnectError.value = error.message
     disconnecting.value = false
     return
   }
-  // El PATCH tuvo éxito. No esperamos el eco de Realtime (no vuelve de forma fiable
-  // para el propio cliente que hizo el UPDATE) — emitimos directo hacia arriba.
+
+  if (!data || data.length === 0) {
+    disconnectError.value = 'El servidor no aplicó el cambio (RLS). Falta la policy de UPDATE de anon en screens.'
+    disconnecting.value = false
+    return
+  }
+
+  // El cambio se aplicó de verdad. No esperamos el eco de Realtime (no vuelve de
+  // forma fiable para el propio cliente que hizo el UPDATE) — emitimos directo.
   emit('disconnected')
 }
 </script>
