@@ -15,6 +15,15 @@ const cachedUrls = ref(null)
 const disconnecting = ref(false)
 const disconnectError = ref(null)
 
+const screenResolution = `${window.screen.width}x${window.screen.height}`
+const userAgent = navigator.userAgent
+// performance.memory es no estándar (solo Chrome/Chromium), pero cubre la mayoría
+// de Smart TVs — útil para detectar memory leaks en sesiones de 24h+ (sección 3
+// del CLAUDE.md) sin necesitar devtools conectado a la TV.
+const memoryInfo = performance.memory
+  ? `${(performance.memory.usedJSHeapSize / 1048576).toFixed(1)} / ${(performance.memory.totalJSHeapSize / 1048576).toFixed(1)} MiB`
+  : null
+
 function forceRefresh() {
   location.reload()
 }
@@ -75,6 +84,15 @@ async function disconnect() {
 
     <p class="label">Device UUID</p>
     <p class="value small">{{ deviceUuid }}</p>
+
+    <p class="label">Resolución</p>
+    <p class="value">{{ screenResolution }}</p>
+
+    <p class="label">Memoria (usada / total)</p>
+    <p class="value">{{ memoryInfo ?? 'No disponible en este navegador' }}</p>
+
+    <p class="label">Agente</p>
+    <p class="value small">{{ userAgent }}</p>
 
     <div class="actions">
       <button @click="forceRefresh">Forzar refresh</button>
