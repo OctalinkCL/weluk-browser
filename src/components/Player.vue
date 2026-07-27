@@ -2,11 +2,14 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { supabase } from '../lib/supabase'
 import { DEVICE_UUID } from '../config'
+import { getCachedBlobUrl } from '../lib/mediaCache'
 
 const items = ref([])
 const currentIndex = ref(0)
 const error = ref(null)
 const fullscreenPrimed = ref(false)
+const displaySrc = ref(null)
+const resolvedUrls = new Map()
 
 const currentPlaylistId = ref(null)
 let lastPublishedAt = null
@@ -37,6 +40,19 @@ function onVideoEnded() {
   advance()
 }
 
+function clearResolvedUrls() {
+  for (const blobUrl of resolvedUrls.values()) {
+    URL.revokeObjectURL(blobUrl)
+  }
+  resolvedUrls.clear()
+}
+
+async function resolveItems(itemsToResolve) {
+  for (const item of itemsToResolve) {
+    resolvedUrls.set(item.url, await getCachedBlobUrl(item.url))
+  }
+}
+
 async function fetchAndSetItems(playlistId, { resetIndex }) {
   const { data: playlistItems, error: itemsError } = await supabase
     .from('playlist_items')
@@ -60,6 +76,11 @@ async function fetchAndSetItems(playlistId, { resetIndex }) {
   }
 
   error.value = items.value.length === 0 ? 'La playlist no tiene contenido.' : null
+
+  // La primera vez que se ve un archivo puede venir directo de la red (ver
+  // displaySrc más abajo); desde la segunda vuelta en adelante ya sale del cache.
+  clearResolvedUrls()
+  resolveItems(items.value)
 }
 
 function teardownPlaylistChannel() {
@@ -165,20 +186,22 @@ onMounted(async () => {
 onUnmounted(() => {
   if (screenChannel) supabase.removeChannel(screenChannel)
   teardownPlaylistChannel()
+  clearResolvedUrls()
 })
 
-watch(currentItem, () => {
+watch(currentItem, (item) => {
   scheduleCurrentItem()
+  displaySrc.value = item ? (resolvedUrls.get(item.url) ?? item.url) : null
 })
 </script>
 
 <template>
   <div class="player">
-    <img v-if="currentItem?.type === 'image'" :key="currentItem.url" :src="currentItem.url" class="media" />
+    <img v-if="currentItem?.type === 'image'" :key="currentItem.url" :src="displaySrc" class="media" />
     <video
       v-else-if="currentItem?.type === 'video'"
       :key="currentItem.url"
-      :src="currentItem.url"
+      :src="displaySrc"
       class="media"
       autoplay
       muted
