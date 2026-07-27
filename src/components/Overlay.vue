@@ -13,6 +13,7 @@ const props = defineProps({
   deviceUuid: { type: String, required: true },
   screenName: { type: String, default: null },
   playlistName: { type: String, default: null },
+  mediaStatus: { type: String, default: null },
 })
 
 const emit = defineEmits(['close', 'disconnected'])
@@ -45,7 +46,7 @@ function formatBytes(bytes) {
 const cacheState = computed(() => {
   if (!window.isSecureContext) return 'DEGRADADO — contexto inseguro (usa HTTPS)'
   if (!cacheApiAvailable) return 'DEGRADADO — navegador sin Cache API'
-  if (cacheStats.quotaExceeded) return 'DEGRADADO — cuota de disco excedida'
+  if (cacheStats.writeFailures > 0) return 'PARCIAL — solo en memoria (falla la escritura a disco)'
   return 'OK — persistente en disco'
 })
 
@@ -136,8 +137,19 @@ async function disconnect() {
     <p class="label">Agente</p>
     <p class="value small">{{ userAgent }}</p>
 
+    <template v-if="mediaStatus">
+      <p class="label">Reproducción</p>
+      <p class="value warn small">{{ mediaStatus }}</p>
+    </template>
+
     <p class="label">Estado del caché</p>
     <p class="value" :class="cacheHealthy ? 'ok' : 'warn'">{{ cacheState }}</p>
+
+    <template v-if="cacheStats.writeFailures > 0">
+      <p class="label">Error de escritura ({{ cacheStats.writeFailures }})</p>
+      <p class="value warn small">{{ cacheStats.writeError }}</p>
+      <p class="value small">{{ cacheStats.writeErrorUrl }}</p>
+    </template>
 
     <p class="label">Descargado en esta sesión</p>
     <p class="value">
