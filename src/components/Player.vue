@@ -26,12 +26,20 @@ let screenChannel = null
 let playlistChannel = null
 
 const currentItem = computed(() => items.value[currentIndex.value] ?? null)
+const videoEl = ref(null)
 
 let imageTimer = null
 
 function advance() {
   if (items.value.length === 0) return
-  currentIndex.value = (currentIndex.value + 1) % items.value.length
+  const nextIndex = (currentIndex.value + 1) % items.value.length
+  if (nextIndex === currentIndex.value) {
+    // Playlist de un solo ítem: el índice no cambia, así que nada dispara el watcher
+    // de forma natural — forzamos el reinicio a mano para que igual loopee.
+    playCurrentItem()
+  } else {
+    currentIndex.value = nextIndex
+  }
 }
 
 function scheduleCurrentItem() {
@@ -43,6 +51,17 @@ function scheduleCurrentItem() {
     imageTimer = setTimeout(advance, item.duration * 1000)
   }
   // Para video, el avance lo dispara el evento @ended del <video>.
+}
+
+function playCurrentItem() {
+  scheduleCurrentItem()
+  const item = currentItem.value
+  displaySrc.value = item ? (resolvedUrls.get(item.url) ?? item.url) : null
+
+  if (item?.type === 'video' && videoEl.value) {
+    videoEl.value.currentTime = 0
+    videoEl.value.play()
+  }
 }
 
 function onVideoEnded() {
@@ -210,9 +229,8 @@ onUnmounted(() => {
   clearResolvedUrls()
 })
 
-watch(currentItem, (item) => {
-  scheduleCurrentItem()
-  displaySrc.value = item ? (resolvedUrls.get(item.url) ?? item.url) : null
+watch(currentItem, () => {
+  playCurrentItem()
 })
 </script>
 
@@ -222,6 +240,7 @@ watch(currentItem, (item) => {
     <video
       v-else-if="currentItem?.type === 'video'"
       :key="currentItem.url"
+      ref="videoEl"
       :src="displaySrc"
       class="media"
       autoplay
