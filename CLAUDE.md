@@ -374,15 +374,58 @@ esperada (pocos cambios al mes) es mínimo.
 red de seguridad adicional al Realtime, para el caso de que el websocket se caiga y no
 reconecte silenciosamente. No reemplaza el mecanismo principal, es solo respaldo.
 
-**✅ Implementado y validado en `visor-web` (26 julio 2026):** usa la **Cache API** del
-navegador (`caches.open()`, `src/lib/mediaCache.js`) — no `localStorage` (no sirve para
-binarios) ni Service Worker (no hace falta para este caso). La primera vez que se ve un
-archivo puede venir directo de la red (mientras se descarga en paralelo hacia el cache);
-desde la segunda vuelta del loop en adelante sale del disco local, cero requests nuevos
-a Supabase Storage — confirmado con Network tab tras 4 vueltas de loop. Si el navegador
-no soporta Cache API (TV muy vieja), degrada a servir la URL remota directo, sin romper
-nada. Nota para `apk` (React Native): ahí corresponde `react-native-fs`, no Cache API
+**✅ Implementado en `visor-web` (26 julio 2026, corregido a fondo el 27):** usa la
+**Cache API** del navegador (`caches.open()`, `src/lib/mediaCache.js`) — no
+`localStorage` (no sirve para binarios) ni Service Worker (no hace falta para este
+caso). Nota para `apk` (React Native): ahí corresponde `react-native-fs`, no Cache API
 (específica de navegador) — la lógica/regla es la misma, la implementación no se porta.
+
+### 🔥 Incidente de egress (27 julio 2026) — 8.58 GB quemados en horas con 3 pantallas
+
+La primera versión del caché degradaba a **servir la URL remota directo** cuando la
+Cache API no estaba disponible. Eso no es una degradación aceptable: significa
+**re-descargar el archivo completo en cada vuelta del loop, para siempre**. Un video de
+20 MB loopeando cada 30 s son ~2.4 GB/hora **por pantalla**. Con 3 dispositivos de
+prueba se pasó el límite de 5 GB/mes del plan free en un par de horas. Con 10 pantallas
+serían ~17 TB/mes.
+
+**Por qué el caché estaba apagado justo en las TVs:** `CacheStorage` es
+**secure-context-only** (HTTPS o `localhost`) y existe recién desde **Chrome 40**.
+Probando por `http://<ip-lan>` o en una TV vieja, `typeof caches === 'undefined'` y el
+fallback entraba en silencio. **Es exactamente el mismo tipo de trampa que
+`crypto.randomUUID` en la sección 3** — misma causa, mismo síntoma invisible.
+
+**Reglas que salen de esto (innegociables, aplican también a `apk`):**
+
+1. **Ningún camino de degradación puede terminar en descarga-por-loop.** La cascada es
+   `memoria → disco → red (una sola vez)`. Si no hay caché en disco, igual se guarda un
+   blob en memoria: el peor caso pasa a ser "una descarga por sesión", nunca por vuelta.
+2. **Nunca mostrar la URL remota mientras se espera el blob.** Servir `item.url` como
+   placeholder hacía que el `<img>`/`<video>` bajara el archivo por su cuenta, en
+   paralelo al fetch del caché (doble descarga en frío) y en cada loop después.
+   Preferir pantalla en negro un instante.
+3. **`QuotaExceededError` de `cache.put` debe atraparse.** Antes se propagaba y mataba
+   la resolución del resto de la playlist, dejando esos ítems remotos permanentemente.
+4. **Deduplicar descargas en vuelo** — la precarga en background y el ítem que se va a
+   reproducir pedían el mismo archivo a la vez.
+5. **`cache.match(url, { ignoreVary: true })`** — Supabase Storage sirve por su CDN y
+   devuelve headers `Vary`; sin esto un match legítimo puede fallar y disparar una
+   re-descarga fantasma.
+6. **Pedir `navigator.storage.persist()` al arrancar** — el Cache Storage es "best
+   effort" y una TV de 1-2 GB corriendo 24/7 lo desaloja bajo presión de memoria.
+7. **El overlay debe mostrar el estado real del caché** (contexto seguro, Cache API
+   disponible, bytes descargados en la sesión, hits de disco/memoria, cuota). Sin esa
+   visibilidad el modo degradado es indetectable hasta ver la factura.
+
+**Regla operativa de pruebas:** probar en TVs **solo contra la URL HTTPS de Vercel**,
+nunca `http://<ip-lan>:5173` ni `:4173`. En HTTP plano por IP no hay caché de medios
+(ni `crypto.randomUUID`), así que cualquier prueba de consumo ahí no representa
+producción y además quema egress real.
+
+**Pendiente para el `panel`:** subir los medios con `cacheControl: '31536000'` — el
+`storage_path` es inmutable por archivo, así que el caché HTTP del navegador sirve de
+red de seguridad bajo la Cache API. Y el "Cached Egress" del dashboard de Supabase es
+egress servido desde su CDN: **igual se factura**, no salva nada.
 
 **Nota de corrección (27 julio 2026):** una playlist con **un solo ítem** no
 loopeaba — el índice `(0 + 1) % 1 = 0` no cambia de valor, así que nada disparaba el

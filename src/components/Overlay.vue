@@ -1,7 +1,13 @@
 <script setup>
-import { ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { supabase } from '../lib/supabase'
-import { MEDIA_CACHE_NAME } from '../lib/mediaCache'
+import {
+  cacheApiAvailable,
+  cacheStats,
+  clearMediaCache,
+  estimateStorage,
+  listCachedUrls,
+} from '../lib/mediaCache'
 
 const props = defineProps({
   deviceUuid: { type: String, required: true },
@@ -24,20 +30,56 @@ const memoryInfo = performance.memory
   ? `${(performance.memory.usedJSHeapSize / 1048576).toFixed(1)} / ${(performance.memory.totalJSHeapSize / 1048576).toFixed(1)} MiB`
   : null
 
+const storageEstimate = ref(null)
+
+function formatBytes(bytes) {
+  if (bytes == null) return '—'
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KiB`
+  if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(1)} MiB`
+  return `${(bytes / 1073741824).toFixed(2)} GiB`
+}
+
+// Sin esto el visor puede estar streameando desde Supabase en cada vuelta del loop sin
+// que nadie se entere hasta ver la factura de egress. La Cache API se cae en silencio
+// fuera de un contexto seguro (HTTP por IP de LAN) o en navegadores previos a Chrome 40.
+const cacheState = computed(() => {
+  if (!window.isSecureContext) return 'DEGRADADO — contexto inseguro (usa HTTPS)'
+  if (!cacheApiAvailable) return 'DEGRADADO — navegador sin Cache API'
+  if (cacheStats.quotaExceeded) return 'DEGRADADO — cuota de disco excedida'
+  return 'OK — persistente en disco'
+})
+
+const cacheHealthy = computed(() => cacheState.value.startsWith('OK'))
+
+const persistentLabel = computed(() => {
+  if (cacheStats.persistent === null) return 'No disponible en este navegador'
+  return cacheStats.persistent ? 'Concedida' : 'Denegada (desalojable)'
+})
+
+const storageLabel = computed(() => {
+  if (!storageEstimate.value) return '—'
+  const { usage, quota } = storageEstimate.value
+  return `${formatBytes(usage)} / ${formatBytes(quota)}`
+})
+
 function forceRefresh() {
   location.reload()
 }
 
-async function listCachedUrls() {
-  const cache = await caches.open(MEDIA_CACHE_NAME)
-  const requests = await cache.keys()
-  cachedUrls.value = requests.map((request) => request.url)
+async function refreshCacheList() {
+  cachedUrls.value = (await listCachedUrls()) ?? []
+  storageEstimate.value = await estimateStorage()
 }
 
 async function clearCache() {
-  await caches.delete(MEDIA_CACHE_NAME)
+  await clearMediaCache()
   cachedUrls.value = []
+  storageEstimate.value = await estimateStorage()
 }
+
+onMounted(async () => {
+  storageEstimate.value = await estimateStorage()
+})
 
 async function disconnect() {
   disconnecting.value = true
@@ -94,9 +136,33 @@ async function disconnect() {
     <p class="label">Agente</p>
     <p class="value small">{{ userAgent }}</p>
 
+    <p class="label">Estado del caché</p>
+    <p class="value" :class="cacheHealthy ? 'ok' : 'warn'">{{ cacheState }}</p>
+
+    <p class="label">Descargado en esta sesión</p>
+    <p class="value">
+      {{ formatBytes(cacheStats.bytesDownloaded) }}
+      <span class="small">({{ cacheStats.networkFetches }} descargas de red)</span>
+    </p>
+
+    <p class="label">Servido sin red</p>
+    <p class="value small">
+      {{ cacheStats.diskHits }} desde disco · {{ cacheStats.memoryHits }} desde memoria
+    </p>
+
+    <p v-if="cacheStats.remoteFallbacks > 0" class="value warn small">
+      {{ cacheStats.remoteFallbacks }} archivo(s) no se pudieron cachear y se sirven remotos.
+    </p>
+
+    <p class="label">Almacenamiento persistente</p>
+    <p class="value small">{{ persistentLabel }}</p>
+
+    <p class="label">Uso de disco</p>
+    <p class="value small">{{ storageLabel }}</p>
+
     <div class="actions">
       <button @click="forceRefresh">Forzar refresh</button>
-      <button @click="listCachedUrls">Listar cache</button>
+      <button @click="refreshCacheList">Listar cache</button>
       <button @click="clearCache">Vaciar cache</button>
     </div>
 
@@ -152,9 +218,18 @@ async function disconnect() {
   font-size: 1rem;
 }
 
-.value.small {
+.value.small,
+.value .small {
   font-size: 0.75rem;
   word-break: break-all;
+}
+
+.value.ok {
+  color: #6c6;
+}
+
+.value.warn {
+  color: #fa4;
 }
 
 .actions {

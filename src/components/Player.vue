@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { supabase } from '../lib/supabase'
-import { getCachedBlobUrl } from '../lib/mediaCache'
+import { pruneBlobUrls, releaseAllBlobUrls, resolveMedia } from '../lib/mediaCache'
 import Overlay from './Overlay.vue'
 
 const props = defineProps({
@@ -15,7 +15,9 @@ const currentIndex = ref(0)
 const error = ref(null)
 const fullscreenPrimed = ref(false)
 const displaySrc = ref(null)
-const resolvedUrls = new Map()
+// url remota -> { url, source } devuelto por resolveMedia
+let resolved = new Map()
+let resolveGeneration = 0
 const screenName = ref(null)
 const playlistName = ref(null)
 const overlayVisible = ref(false)
@@ -36,7 +38,7 @@ function advance() {
   if (nextIndex === currentIndex.value) {
     // Playlist de un solo ítem: el índice no cambia, así que nada dispara el watcher
     // de forma natural — forzamos el reinicio a mano para que igual loopee.
-    playCurrentItem()
+    showCurrentItem()
   } else {
     currentIndex.value = nextIndex
   }
@@ -56,7 +58,7 @@ function scheduleCurrentItem() {
 function playCurrentItem() {
   scheduleCurrentItem()
   const item = currentItem.value
-  displaySrc.value = item ? (resolvedUrls.get(item.url) ?? item.url) : null
+  displaySrc.value = item ? (resolved.get(item.url)?.url ?? null) : null
 
   if (item?.type === 'video' && videoEl.value) {
     videoEl.value.currentTime = 0
@@ -64,21 +66,59 @@ function playCurrentItem() {
   }
 }
 
+// Nunca mostramos `item.url` (la URL remota de Supabase) mientras esperamos: hacerlo
+// era lo que provocaba que el elemento bajara el archivo por su cuenta, en paralelo al
+// fetch del caché primero, y en cada vuelta del loop después. Preferimos negro un
+// instante — la regla de oro de la sección 7 no se negocia.
+async function showCurrentItem() {
+  const item = currentItem.value
+
+  if (!item) {
+    clearTimeout(imageTimer)
+    displaySrc.value = null
+    return
+  }
+
+  if (!resolved.has(item.url)) {
+    clearTimeout(imageTimer)
+    displaySrc.value = null
+    await resolveItem(item)
+    if (currentItem.value !== item) return
+  }
+
+  playCurrentItem()
+}
+
 function onVideoEnded() {
   advance()
 }
 
-function clearResolvedUrls() {
-  for (const blobUrl of resolvedUrls.values()) {
-    URL.revokeObjectURL(blobUrl)
-  }
-  resolvedUrls.clear()
+async function resolveItem(item) {
+  if (!item || resolved.has(item.url)) return
+  resolved.set(item.url, await resolveMedia(item.url))
 }
 
-async function resolveItems(itemsToResolve) {
-  for (const item of itemsToResolve) {
-    resolvedUrls.set(item.url, await getCachedBlobUrl(item.url))
+// Precarga el resto de la playlist en background, sin interrumpir lo que se reproduce.
+// La generación evita que una playlist vieja siga resolviendo tras un cambio.
+async function resolveRemaining(generation) {
+  for (const item of items.value) {
+    if (generation !== resolveGeneration) return
+    await resolveItem(item)
   }
+}
+
+// Descarta las entradas de archivos que ya no están en la playlist y revoca sus blob
+// URLs, para que la memoria quede acotada al contenido vigente.
+function pruneResolved(urls) {
+  const keep = new Set(urls)
+  const next = new Map()
+
+  for (const [url, entry] of resolved) {
+    if (keep.has(url)) next.set(url, entry)
+  }
+
+  resolved = next
+  pruneBlobUrls(urls)
 }
 
 async function fetchAndSetItems(playlistId, { resetIndex }) {
@@ -105,10 +145,11 @@ async function fetchAndSetItems(playlistId, { resetIndex }) {
 
   error.value = items.value.length === 0 ? 'La playlist no tiene contenido.' : null
 
-  // La primera vez que se ve un archivo puede venir directo de la red (ver
-  // displaySrc más abajo); desde la segunda vuelta en adelante ya sale del cache.
-  clearResolvedUrls()
-  resolveItems(items.value)
+  // Conservamos lo ya resuelto que siga en la playlist (una republicación que solo
+  // reordena ítems no debe re-descargar nada) y soltamos el resto.
+  resolveGeneration += 1
+  pruneResolved(items.value.map((item) => item.url))
+  resolveRemaining(resolveGeneration)
 }
 
 function teardownPlaylistChannel() {
@@ -199,6 +240,8 @@ function subscribeToScreen() {
           currentPlaylistId.value = null
           items.value = []
           currentIndex.value = 0
+          resolveGeneration += 1
+          pruneResolved([])
           error.value = 'La pantalla no tiene una playlist asignada.'
           return
         }
@@ -226,11 +269,13 @@ onMounted(async () => {
 onUnmounted(() => {
   if (screenChannel) supabase.removeChannel(screenChannel)
   teardownPlaylistChannel()
-  clearResolvedUrls()
+  resolveGeneration += 1
+  resolved = new Map()
+  releaseAllBlobUrls()
 })
 
 watch(currentItem, () => {
-  playCurrentItem()
+  showCurrentItem()
 })
 </script>
 
