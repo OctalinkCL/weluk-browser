@@ -25,8 +25,13 @@ export const cacheStats = reactive({
   diskHits: 0,
   memoryHits: 0,
   remoteFallbacks: 0,
-  quotaExceeded: false,
   persistent: null,
+  // Último fallo de `cache.put`, tal cual lo reportó el navegador. No asumimos que
+  // sea cuota: en una TV puede fallar por otras razones y la distinción cambia el
+  // diagnóstico (cuota → comprimir el video; otra cosa → investigar).
+  writeError: null,
+  writeErrorUrl: null,
+  writeFailures: 0,
 })
 
 // El Cache Storage es "best effort": el navegador lo puede desalojar bajo presión de
@@ -53,6 +58,19 @@ export async function estimateStorage() {
   } catch {
     return null
   }
+}
+
+// Los navegadores viejos de Smart TV no siempre lanzan un DOMException con `name` y
+// `message` poblados — a veces es un string pelado o un objeto raro. Extraemos lo que
+// haya sin asumir forma, porque este texto es la única pista que vamos a tener desde
+// una TV sin devtools.
+function describeError(err) {
+  if (!err) return 'Error desconocido'
+  if (typeof err === 'string') return err
+
+  const name = err.name || 'Error'
+  const message = err.message || String(err)
+  return message && message !== name ? `${name}: ${message}` : name
 }
 
 async function openCache() {
@@ -117,11 +135,13 @@ async function resolveUncached(remoteUrl) {
   if (cache) {
     try {
       await cache.put(remoteUrl, fetched.clone())
-    } catch {
-      // QuotaExceededError. Seguimos igual con el blob en memoria: antes esta
-      // excepción se propagaba y mataba la resolución del resto de la playlist,
+    } catch (err) {
+      // Típicamente QuotaExceededError. Seguimos igual con el blob en memoria: antes
+      // esta excepción se propagaba y mataba la resolución del resto de la playlist,
       // dejando esos ítems streameando la URL remota en cada vuelta.
-      cacheStats.quotaExceeded = true
+      cacheStats.writeFailures += 1
+      cacheStats.writeError = describeError(err)
+      cacheStats.writeErrorUrl = remoteUrl
     }
   }
 

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { supabase } from '../lib/supabase'
 import { pruneBlobUrls, releaseAllBlobUrls, resolveMedia } from '../lib/mediaCache'
 import Overlay from './Overlay.vue'
@@ -21,6 +21,10 @@ let resolveGeneration = 0
 const screenName = ref(null)
 const playlistName = ref(null)
 const overlayVisible = ref(false)
+// Diagnóstico de reproducción para el overlay: en una TV no hay devtools, así que este
+// texto es la única pista de por qué la pantalla está en negro.
+const mediaStatus = ref(null)
+let playbackWatchdog = null
 
 const currentPlaylistId = ref(null)
 let lastPublishedAt = null
@@ -55,15 +59,62 @@ function scheduleCurrentItem() {
   // Para video, el avance lo dispara el evento @ended del <video>.
 }
 
-function playCurrentItem() {
+async function playCurrentItem() {
   scheduleCurrentItem()
   const item = currentItem.value
-  displaySrc.value = item ? (resolved.get(item.url)?.url ?? null) : null
+  const nextSrc = item ? (resolved.get(item.url)?.url ?? null) : null
+  const srcChanged = displaySrc.value !== nextSrc
+  displaySrc.value = nextSrc
 
-  if (item?.type === 'video' && videoEl.value) {
-    videoEl.value.currentTime = 0
-    videoEl.value.play()
+  if (item?.type !== 'video' || !nextSrc) return
+
+  // Vue aplica el src en su flush, no en la asignación de arriba. Sin esperar el tick,
+  // .play() corre contra el <video> que todavía tiene el src anterior (vacío) y no
+  // arranca nada; y como :key no cambia, el atributo autoplay tampoco vuelve a
+  // dispararse. Eso dejaba la pantalla en negro para siempre.
+  await nextTick()
+
+  const el = videoEl.value
+  if (!el) return
+
+  // load() explícito: los navegadores viejos de Smart TV no siempre recargan solos al
+  // cambiar el src de un elemento ya montado.
+  if (srcChanged) el.load()
+
+  try {
+    el.currentTime = 0
+  } catch {
+    // Algunos navegadores lanzan si el media todavía no tiene metadata cargada.
   }
+
+  armPlaybackWatchdog()
+
+  const played = el.play()
+  if (played && played.catch) played.catch((err) => {
+    mediaStatus.value = `play() rechazado: ${err?.name ?? err}`
+  })
+}
+
+// Una pantalla de signage no puede quedarse en negro indefinidamente si el video no
+// arranca (códec no soportado, blob: no reproducible en esa TV, etc.). Si en 10 s no
+// llegó el evento `playing`, se reporta y se avanza.
+function armPlaybackWatchdog() {
+  clearTimeout(playbackWatchdog)
+  playbackWatchdog = setTimeout(() => {
+    mediaStatus.value = 'El video no empezó a reproducirse en 10 s — se fuerza el avance.'
+    advance()
+  }, 10000)
+}
+
+function onVideoPlaying() {
+  clearTimeout(playbackWatchdog)
+  mediaStatus.value = null
+}
+
+function onVideoError() {
+  clearTimeout(playbackWatchdog)
+  const code = videoEl.value?.error?.code
+  mediaStatus.value = `El <video> falló (MediaError code ${code ?? '?'}). ¿La TV no reproduce blob: URLs?`
 }
 
 // Nunca mostramos `item.url` (la URL remota de Supabase) mientras esperamos: hacerlo
@@ -90,6 +141,7 @@ async function showCurrentItem() {
 }
 
 function onVideoEnded() {
+  clearTimeout(playbackWatchdog)
   advance()
 }
 
@@ -267,6 +319,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  clearTimeout(imageTimer)
+  clearTimeout(playbackWatchdog)
   if (screenChannel) supabase.removeChannel(screenChannel)
   teardownPlaylistChannel()
   resolveGeneration += 1
@@ -292,6 +346,8 @@ watch(currentItem, () => {
       muted
       playsinline
       @ended="onVideoEnded"
+      @playing="onVideoPlaying"
+      @error="onVideoError"
     />
     <p v-else-if="error" class="message">{{ error }}</p>
 
@@ -304,6 +360,7 @@ watch(currentItem, () => {
       :device-uuid="props.deviceUuid"
       :screen-name="screenName"
       :playlist-name="playlistName"
+      :media-status="mediaStatus"
       @close="overlayVisible = false"
       @disconnected="emit('disconnected')"
     />
