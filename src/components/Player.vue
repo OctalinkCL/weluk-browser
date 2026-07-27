@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { supabase } from '../lib/supabase'
 import { DEVICE_UUID } from '../config'
 
@@ -7,6 +7,11 @@ const items = ref([])
 const currentIndex = ref(0)
 const error = ref(null)
 const fullscreenPrimed = ref(false)
+
+const currentPlaylistId = ref(null)
+let lastPublishedAt = null
+let screenChannel = null
+let playlistChannel = null
 
 const currentItem = computed(() => items.value[currentIndex.value] ?? null)
 
@@ -32,7 +37,77 @@ function onVideoEnded() {
   advance()
 }
 
-async function loadPlaylist() {
+async function fetchAndSetItems(playlistId, { resetIndex }) {
+  const { data: playlistItems, error: itemsError } = await supabase
+    .from('playlist_items')
+    .select('order_index, duration_seconds, media(type, storage_path, duration_seconds)')
+    .eq('playlist_id', playlistId)
+    .order('order_index', { ascending: true })
+
+  if (itemsError) {
+    error.value = `No se pudieron leer los items de la playlist: ${itemsError.message}`
+    return
+  }
+
+  items.value = (playlistItems ?? []).map((item) => ({
+    type: item.media.type,
+    url: supabase.storage.from('media').getPublicUrl(item.media.storage_path).data.publicUrl,
+    duration: item.duration_seconds ?? item.media.duration_seconds,
+  }))
+
+  if (resetIndex || currentIndex.value >= items.value.length) {
+    currentIndex.value = 0
+  }
+
+  error.value = items.value.length === 0 ? 'La playlist no tiene contenido.' : null
+}
+
+function teardownPlaylistChannel() {
+  if (playlistChannel) {
+    supabase.removeChannel(playlistChannel)
+    playlistChannel = null
+  }
+}
+
+function subscribeToPlaylist(playlistId) {
+  teardownPlaylistChannel()
+
+  playlistChannel = supabase
+    .channel(`playlist-${playlistId}`)
+    .on(
+      'postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'playlists', filter: `id=eq.${playlistId}` },
+      (payload) => {
+        // Solo reaccionar cuando cambia published_at (contenido publicado), nunca con
+        // updated_at (edición a medio hacer) — ver sección 5 del CLAUDE.md.
+        if (payload.new.published_at === lastPublishedAt) return
+        lastPublishedAt = payload.new.published_at
+        fetchAndSetItems(playlistId, { resetIndex: false })
+      },
+    )
+    .subscribe()
+}
+
+async function setPlaylist(playlistId, { resetIndex }) {
+  currentPlaylistId.value = playlistId
+
+  const { data: playlist, error: playlistError } = await supabase
+    .from('playlists')
+    .select('published_at')
+    .eq('id', playlistId)
+    .single()
+
+  if (playlistError) {
+    error.value = `No se pudo leer la playlist: ${playlistError.message}`
+    return
+  }
+
+  lastPublishedAt = playlist.published_at
+  await fetchAndSetItems(playlistId, { resetIndex })
+  subscribeToPlaylist(playlistId)
+}
+
+async function loadScreen() {
   const { data: screen, error: screenError } = await supabase
     .from('screens')
     .select('current_playlist_id')
@@ -49,26 +124,32 @@ async function loadPlaylist() {
     return
   }
 
-  const { data: playlistItems, error: itemsError } = await supabase
-    .from('playlist_items')
-    .select('order_index, duration_seconds, media(type, storage_path, duration_seconds)')
-    .eq('playlist_id', screen.current_playlist_id)
-    .order('order_index', { ascending: true })
+  await setPlaylist(screen.current_playlist_id, { resetIndex: true })
+}
 
-  if (itemsError) {
-    error.value = `No se pudieron leer los items de la playlist: ${itemsError.message}`
-    return
-  }
+function subscribeToScreen() {
+  screenChannel = supabase
+    .channel(`screen-${DEVICE_UUID}`)
+    .on(
+      'postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'screens', filter: `device_uuid=eq.${DEVICE_UUID}` },
+      async (payload) => {
+        const newPlaylistId = payload.new.current_playlist_id
+        if (newPlaylistId === currentPlaylistId.value) return
 
-  items.value = (playlistItems ?? []).map((item) => ({
-    type: item.media.type,
-    url: supabase.storage.from('media').getPublicUrl(item.media.storage_path).data.publicUrl,
-    duration: item.duration_seconds ?? item.media.duration_seconds,
-  }))
+        if (!newPlaylistId) {
+          teardownPlaylistChannel()
+          currentPlaylistId.value = null
+          items.value = []
+          currentIndex.value = 0
+          error.value = 'La pantalla no tiene una playlist asignada.'
+          return
+        }
 
-  if (items.value.length === 0) {
-    error.value = 'La playlist no tiene contenido.'
-  }
+        await setPlaylist(newPlaylistId, { resetIndex: true })
+      },
+    )
+    .subscribe()
 }
 
 function activateFullscreen() {
@@ -77,7 +158,13 @@ function activateFullscreen() {
 }
 
 onMounted(async () => {
-  await loadPlaylist()
+  await loadScreen()
+  subscribeToScreen()
+})
+
+onUnmounted(() => {
+  if (screenChannel) supabase.removeChannel(screenChannel)
+  teardownPlaylistChannel()
 })
 
 watch(currentItem, () => {
