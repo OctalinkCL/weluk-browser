@@ -58,6 +58,24 @@ async function insertPairingCode() {
   error.value = 'No se pudo generar un código único. Recargá la página para reintentar.'
 }
 
+// El localStorage se desincroniza de la base con facilidad: limpieza manual de códigos
+// vencidos, un futuro job de expiración, o un reset del proyecto. Mostrar un código que
+// ya no existe deja la pantalla esperando un claim imposible — el SQL de reclamo afecta
+// 0 filas y no falla, así que nadie se entera (mismo patrón que el gotcha de RLS).
+async function pendingCodeExists(candidate) {
+  const { data, error: selectError } = await supabase
+    .from('pairing_codes')
+    .select('code')
+    .eq('code', candidate)
+    .eq('device_uuid', props.deviceUuid)
+    .eq('status', 'pending')
+    .gt('expires_at', new Date().toISOString())
+    .maybeSingle()
+
+  if (selectError) return false
+  return Boolean(data)
+}
+
 function subscribeToClaim() {
   screenChannel = supabase
     .channel(`pairing-${props.deviceUuid}`)
@@ -75,18 +93,20 @@ function subscribeToClaim() {
     .subscribe()
 }
 
-onMounted(() => {
+onMounted(async () => {
   // Suscribirse antes de mostrar el código: si alguien lo reclama muy rápido, no se
   // pierde el evento esperando a que termine de insertarse el código.
   subscribeToClaim()
 
   const stored = getStoredPendingCode()
-  if (stored) {
+  if (stored && (await pendingCodeExists(stored.code))) {
     code.value = stored.code
     scheduleExpiryRefresh(stored.expiresAt)
-  } else {
-    insertPairingCode()
+    return
   }
+
+  clearStoredPendingCode()
+  insertPairingCode()
 })
 
 onUnmounted(() => {
