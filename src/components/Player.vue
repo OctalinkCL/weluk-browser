@@ -1,8 +1,11 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { supabase } from '../lib/supabase'
-import { DEVICE_UUID } from '../config'
 import { getCachedBlobUrl } from '../lib/mediaCache'
+
+const props = defineProps({
+  deviceUuid: { type: String, required: true },
+})
 
 const items = ref([])
 const currentIndex = ref(0)
@@ -132,7 +135,7 @@ async function loadScreen() {
   const { data: screen, error: screenError } = await supabase
     .from('screens')
     .select('current_playlist_id')
-    .eq('device_uuid', DEVICE_UUID)
+    .eq('device_uuid', props.deviceUuid)
     .single()
 
   if (screenError) {
@@ -150,10 +153,10 @@ async function loadScreen() {
 
 function subscribeToScreen() {
   screenChannel = supabase
-    .channel(`screen-${DEVICE_UUID}`)
+    .channel(`screen-${props.deviceUuid}`)
     .on(
       'postgres_changes',
-      { event: 'UPDATE', schema: 'public', table: 'screens', filter: `device_uuid=eq.${DEVICE_UUID}` },
+      { event: 'UPDATE', schema: 'public', table: 'screens', filter: `device_uuid=eq.${props.deviceUuid}` },
       async (payload) => {
         const newPlaylistId = payload.new.current_playlist_id
         if (newPlaylistId === currentPlaylistId.value) return
