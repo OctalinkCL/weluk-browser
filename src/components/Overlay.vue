@@ -9,7 +9,7 @@ const props = defineProps({
   playlistName: { type: String, default: null },
 })
 
-const emit = defineEmits(['close'])
+const emit = defineEmits(['close', 'disconnected'])
 
 const cachedUrls = ref(null)
 const disconnecting = ref(false)
@@ -44,8 +44,9 @@ async function disconnect() {
     disconnecting.value = false
     return
   }
-  // Si no hubo error, el propio visor detecta el cambio vía Realtime y vuelve a
-  // pairing solo — se deja disconnecting=true porque el componente se desmonta.
+  // El PATCH tuvo éxito. No esperamos el eco de Realtime (no vuelve de forma fiable
+  // para el propio cliente que hizo el UPDATE) — emitimos directo hacia arriba.
+  emit('disconnected')
 }
 </script>
 

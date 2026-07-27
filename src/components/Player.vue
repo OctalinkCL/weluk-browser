@@ -241,6 +241,7 @@ watch(currentItem, (item) => {
       :screen-name="screenName"
       :playlist-name="playlistName"
       @close="overlayVisible = false"
+      @disconnected="emit('disconnected')"
     />
   </div>
 </template>
