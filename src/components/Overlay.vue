@@ -1,0 +1,178 @@
+<script setup>
+import { ref } from 'vue'
+import { supabase } from '../lib/supabase'
+import { MEDIA_CACHE_NAME } from '../lib/mediaCache'
+
+const props = defineProps({
+  deviceUuid: { type: String, required: true },
+  screenName: { type: String, default: null },
+  playlistName: { type: String, default: null },
+})
+
+const emit = defineEmits(['close'])
+
+const cachedUrls = ref(null)
+const disconnecting = ref(false)
+const disconnectError = ref(null)
+
+function forceRefresh() {
+  location.reload()
+}
+
+async function listCachedUrls() {
+  const cache = await caches.open(MEDIA_CACHE_NAME)
+  const requests = await cache.keys()
+  cachedUrls.value = requests.map((request) => request.url)
+}
+
+async function clearCache() {
+  await caches.delete(MEDIA_CACHE_NAME)
+  cachedUrls.value = []
+}
+
+async function disconnect() {
+  disconnecting.value = true
+  disconnectError.value = null
+
+  const { error } = await supabase
+    .from('screens')
+    .update({ status: 'disconnected', current_playlist_id: null })
+    .eq('device_uuid', props.deviceUuid)
+
+  if (error) {
+    disconnectError.value = error.message
+    disconnecting.value = false
+    return
+  }
+  // Si no hubo error, el propio visor detecta el cambio vía Realtime y vuelve a
+  // pairing solo — se deja disconnecting=true porque el componente se desmonta.
+}
+</script>
+
+<template>
+  <div class="overlay" @click.stop>
+    <div class="header">
+      <div>
+        <p class="label">Pantalla</p>
+        <p class="value">{{ screenName ?? '—' }}</p>
+      </div>
+      <button class="close" @click="emit('close')">×</button>
+    </div>
+
+    <p class="label">Playlist actual</p>
+    <p class="value">{{ playlistName ?? '—' }}</p>
+
+    <p class="label">Device UUID</p>
+    <p class="value small">{{ deviceUuid }}</p>
+
+    <div class="actions">
+      <button @click="forceRefresh">Forzar refresh</button>
+      <button @click="listCachedUrls">Listar cache</button>
+      <button @click="clearCache">Vaciar cache</button>
+    </div>
+
+    <ul v-if="cachedUrls" class="cache-list">
+      <li v-if="cachedUrls.length === 0">Cache vacío.</li>
+      <li v-for="url in cachedUrls" :key="url">{{ url }}</li>
+    </ul>
+
+    <button class="disconnect" :disabled="disconnecting" @click="disconnect">
+      {{ disconnecting ? 'Desconectando…' : 'Disconnect this screen' }}
+    </button>
+    <p v-if="disconnectError" class="error">{{ disconnectError }}</p>
+  </div>
+</template>
+
+<style scoped>
+.overlay {
+  position: fixed;
+  top: 1rem;
+  left: 1rem;
+  width: 22rem;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.9);
+  color: #fff;
+  font-family: sans-serif;
+  padding: 1rem;
+  border-radius: 8px;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.close {
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.label {
+  color: #999;
+  font-size: 0.8rem;
+  margin-top: 0.75rem;
+}
+
+.value {
+  font-size: 1rem;
+}
+
+.value.small {
+  font-size: 0.75rem;
+  word-break: break-all;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.actions button {
+  background: #222;
+  color: #fff;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.cache-list {
+  margin-top: 0.75rem;
+  padding-left: 1rem;
+  font-size: 0.7rem;
+  color: #ccc;
+  word-break: break-all;
+}
+
+.disconnect {
+  display: block;
+  width: 100%;
+  margin-top: 1.5rem;
+  padding: 0.6rem;
+  background: #400;
+  color: #fff;
+  border: 1px solid #a33;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.disconnect:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.error {
+  color: #f66;
+  font-size: 0.8rem;
+  margin-top: 0.5rem;
+}
+</style>

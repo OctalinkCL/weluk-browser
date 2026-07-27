@@ -1,4 +1,5 @@
-const CACHE_NAME = 'weluk-media-v1'
+export const MEDIA_CACHE_NAME = 'weluk-media-v1'
+const CACHE_NAME = MEDIA_CACHE_NAME
 
 // Descarga el archivo una sola vez y lo deja en el Cache Storage del navegador
 // (persiste en disco entre recargas). Si el navegador no soporta Cache API

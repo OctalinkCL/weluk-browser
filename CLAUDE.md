@@ -109,6 +109,22 @@ nomodule>` como fallback. Tras esto el visor cargó correctamente en el TV viejo
   build` automáticamente) — nunca el dev server directo.
 - Pendiente: repetir esta misma validación en el box Onn.
 
+**Segundo hallazgo, al implementar pairing (26 julio 2026):** pantalla en blanco al
+probar el visor por IP de LAN en HTTP plano (ej. `http://192.168.1.x:5173`) — funcionaba
+bien en `localhost` pero no por IP. Causa: `crypto.randomUUID()` (usado para generar el
+`device_uuid` persistente) **solo existe en contextos seguros** (HTTPS, o el caso
+especial de `localhost`); por HTTP plano en una IP simplemente no está disponible y la
+app revenaba al montar, antes de renderizar nada. Muy probablemente la misma causa de
+que el visor se cayera en el TV real (que accedía por IP, no por una URL HTTPS).
+
+- **Fix aplicado:** `src/lib/device.js` ahora hace fallback a un generador de UUID
+  manual (`Math.random()`, sin necesidad de Web Crypto) cuando `crypto.randomUUID` no
+  existe. No cambia nada cuando sí está disponible.
+- **No afecta producción:** el deploy real es vía Vercel, que sirve todo por HTTPS
+  (contexto seguro) — este bug solo aparece probando por IP de LAN en HTTP plano durante
+  desarrollo, o si alguna vez se prueba en el TV apuntando directo a una IP en vez de una
+  URL HTTPS real.
+
 ---
 
 ## 4. Backend / Datos

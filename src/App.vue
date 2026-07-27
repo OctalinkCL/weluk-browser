@@ -20,6 +20,10 @@ onMounted(async () => {
 </script>
 
 <template>
-  <Player v-if="screenState === 'paired'" :device-uuid="deviceUuid" />
+  <Player
+    v-if="screenState === 'paired'"
+    :device-uuid="deviceUuid"
+    @disconnected="screenState = 'pairing'"
+  />
   <Pairing v-else-if="screenState === 'pairing'" :device-uuid="deviceUuid" @paired="screenState = 'paired'" />
 </template>

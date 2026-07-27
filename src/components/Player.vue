@@ -2,10 +2,13 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { supabase } from '../lib/supabase'
 import { getCachedBlobUrl } from '../lib/mediaCache'
+import Overlay from './Overlay.vue'
 
 const props = defineProps({
   deviceUuid: { type: String, required: true },
 })
+
+const emit = defineEmits(['disconnected'])
 
 const items = ref([])
 const currentIndex = ref(0)
@@ -13,6 +16,9 @@ const error = ref(null)
 const fullscreenPrimed = ref(false)
 const displaySrc = ref(null)
 const resolvedUrls = new Map()
+const screenName = ref(null)
+const playlistName = ref(null)
+const overlayVisible = ref(false)
 
 const currentPlaylistId = ref(null)
 let lastPublishedAt = null
@@ -117,7 +123,7 @@ async function setPlaylist(playlistId, { resetIndex }) {
 
   const { data: playlist, error: playlistError } = await supabase
     .from('playlists')
-    .select('published_at')
+    .select('name, published_at')
     .eq('id', playlistId)
     .single()
 
@@ -126,6 +132,7 @@ async function setPlaylist(playlistId, { resetIndex }) {
     return
   }
 
+  playlistName.value = playlist.name
   lastPublishedAt = playlist.published_at
   await fetchAndSetItems(playlistId, { resetIndex })
   subscribeToPlaylist(playlistId)
@@ -134,7 +141,7 @@ async function setPlaylist(playlistId, { resetIndex }) {
 async function loadScreen() {
   const { data: screen, error: screenError } = await supabase
     .from('screens')
-    .select('current_playlist_id')
+    .select('name, current_playlist_id')
     .eq('device_uuid', props.deviceUuid)
     .single()
 
@@ -142,6 +149,8 @@ async function loadScreen() {
     error.value = `No se pudo leer la pantalla: ${screenError.message}`
     return
   }
+
+  screenName.value = screen.name
 
   if (!screen?.current_playlist_id) {
     error.value = 'La pantalla no tiene una playlist asignada.'
@@ -158,6 +167,11 @@ function subscribeToScreen() {
       'postgres_changes',
       { event: 'UPDATE', schema: 'public', table: 'screens', filter: `device_uuid=eq.${props.deviceUuid}` },
       async (payload) => {
+        if (payload.new.status !== 'paired') {
+          emit('disconnected')
+          return
+        }
+
         const newPlaylistId = payload.new.current_playlist_id
         if (newPlaylistId === currentPlaylistId.value) return
 
@@ -181,6 +195,10 @@ function activateFullscreen() {
   fullscreenPrimed.value = true
 }
 
+function toggleOverlay() {
+  overlayVisible.value = !overlayVisible.value
+}
+
 onMounted(async () => {
   await loadScreen()
   subscribeToScreen()
@@ -199,7 +217,7 @@ watch(currentItem, (item) => {
 </script>
 
 <template>
-  <div class="player">
+  <div class="player" @click="toggleOverlay">
     <img v-if="currentItem?.type === 'image'" :key="currentItem.url" :src="displaySrc" class="media" />
     <video
       v-else-if="currentItem?.type === 'video'"
@@ -213,9 +231,17 @@ watch(currentItem, (item) => {
     />
     <p v-else-if="error" class="message">{{ error }}</p>
 
-    <button v-if="!fullscreenPrimed" class="fullscreen-button" @click="activateFullscreen">
+    <button v-if="!fullscreenPrimed" class="fullscreen-button" @click.stop="activateFullscreen">
       Pantalla completa
     </button>
+
+    <Overlay
+      v-if="overlayVisible"
+      :device-uuid="props.deviceUuid"
+      :screen-name="screenName"
+      :playlist-name="playlistName"
+      @close="overlayVisible = false"
+    />
   </div>
 </template>
 
