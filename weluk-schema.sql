@@ -230,6 +230,20 @@ create policy "anon puede leer screens por device_uuid"
   to anon
   using (true);
 
+-- El visor necesita poder desconectarse a sí mismo (botón "Disconnect" del overlay
+-- de diagnóstico, sección 9 del CLAUDE.md) — mismo problema de no poder restringir
+-- por fila sin auth real; se acepta el mismo tradeoff que en las policies de arriba.
+-- OJO: una policy de UPDATE necesita SÍ o SÍ el `with check` además del `using` —
+-- sin él, PostgREST responde 204 pero afecta 0 filas (el UPDATE se descarta en
+-- silencio), lo que parece éxito desde el cliente pero no cambia nada en la base.
+grant update on screens to anon;
+
+create policy "anon puede desconectar su propia pantalla"
+  on screens for update
+  to anon
+  using (true)
+  with check (true);
+
 -- --- Policies: playlists, playlist_items, media (anon, solo lectura) ---
 create policy "anon puede leer playlists publicadas"
   on playlists for select

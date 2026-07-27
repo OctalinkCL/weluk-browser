@@ -87,6 +87,44 @@ del Onn (u otro box Android genérico) y en el navegador integrado de al menos u
 TV real, qué versión de Chromium corre debajo, y si el `localStorage`/almacenamiento
 persiste entre reinicios y actualizaciones de firmware.
 
+**Hallazgo de la primera prueba en hardware real (26 julio 2026):** un Smart TV Samsung
+más viejo mostraba pantalla en blanco con el build normal de Vite — el navegador es tan
+antiguo que ni siquiera soporta `<script type="module">` nativo, así que el JS nunca
+llegaba a correr (el navegador ignora el tag silenciosamente, sin error visible). Dato
+de contexto útil: en ese mismo TV, `d.juuno.co` (el competidor validado) tampoco cargó
+(quedó en negro) — confirma que es un techo real de hardware/navegador, no un bug propio.
+
+**Fix aplicado:** se agregó `@vitejs/plugin-legacy` en `vite.config.js` del repo
+`visor-web`, con `targets: ['chrome >= 38', 'safari >= 9']`. Esto genera un bundle
+adicional transpilado a ES5 + polyfills + loader SystemJS, servido vía `<script
+nomodule>` como fallback. Tras esto el visor cargó correctamente en el TV viejo.
+
+- **Ojo con la versión del plugin:** la última versión de `@vitejs/plugin-legacy` (8.x)
+  pide Vite 8 como peer — como el proyecto corre Vite 5.x, hay que fijar la versión del
+  plugin a la misma serie mayor que Vite (`@vitejs/plugin-legacy@5.4.3` en este caso),
+  no instalar "latest" a ciegas.
+- **El fallback legacy solo existe en el build de producción** (`vite build`), nunca en
+  el dev server (`vite dev`). Para probar en hardware real (TV/Onn) siempre hay que usar
+  `pnpm build && pnpm preview --host`, o el deploy real en Vercel (que ya corre `vite
+  build` automáticamente) — nunca el dev server directo.
+- Pendiente: repetir esta misma validación en el box Onn.
+
+**Segundo hallazgo, al implementar pairing (26 julio 2026):** pantalla en blanco al
+probar el visor por IP de LAN en HTTP plano (ej. `http://192.168.1.x:5173`) — funcionaba
+bien en `localhost` pero no por IP. Causa: `crypto.randomUUID()` (usado para generar el
+`device_uuid` persistente) **solo existe en contextos seguros** (HTTPS, o el caso
+especial de `localhost`); por HTTP plano en una IP simplemente no está disponible y la
+app revenaba al montar, antes de renderizar nada. Muy probablemente la misma causa de
+que el visor se cayera en el TV real (que accedía por IP, no por una URL HTTPS).
+
+- **Fix aplicado:** `src/lib/device.js` ahora hace fallback a un generador de UUID
+  manual (`Math.random()`, sin necesidad de Web Crypto) cuando `crypto.randomUUID` no
+  existe. No cambia nada cuando sí está disponible.
+- **No afecta producción:** el deploy real es vía Vercel, que sirve todo por HTTPS
+  (contexto seguro) — este bug solo aparece probando por IP de LAN en HTTP plano durante
+  desarrollo, o si alguna vez se prueba en el TV apuntando directo a una IP en vez de una
+  URL HTTPS real.
+
 ---
 
 ## 4. Backend / Datos
@@ -120,6 +158,24 @@ storage total** y **50 MB máx por archivo**. Definir desde el día uno:
 **Riesgo operativo:** proyectos free se pausan tras 7 días sin actividad de API. No
 debería ocurrir con Realtime corriendo 24/7 en las TVs, pero cuidado si las TVs de
 prueba quedan desconectadas por un período largo entre pruebas del piloto.
+
+**Gotcha de RLS descubierto (27 julio 2026, al implementar el disconnect del
+visor):** un `UPDATE` de un rol sin policy que lo permita **no da error** — PostgREST
+responde `204 No Content` afectando **0 filas**, como si hubiera funcionado. El bug
+real: la policy de `UPDATE` para `anon` en `screens` estaba en `weluk-schema.sql` pero
+nunca se había corrido contra el proyecto real, y esto quedó oculto durante horas
+porque el disconnect por SQL directo (rol `postgres`, sin RLS) sí funcionaba.
+
+- **Cómo evitarlo:** cualquier escritura de `anon`/`authenticated` vía supabase-js debe
+  encadenar `.select()` y verificar `data.length > 0` — si es 0, RLS bloqueó la
+  escritura en silencio, tratarlo como error.
+- Una policy de `UPDATE` necesita `with check (...)` además de `using (...)` — sin
+  `with check`, la fila nueva puede rechazarse en silencio.
+- No asumir que lo que está en `weluk-schema.sql` ya está aplicado en el proyecto
+  Supabase real — confirmar con `select policyname, cmd, roles, qual, with_check from
+pg_policies where tablename = '<tabla>';`.
+- **Directamente relevante para `panel`**: todas sus escrituras de `authenticated`
+  tienen el mismo riesgo.
 
 ---
 
@@ -191,24 +247,17 @@ image/webp, video/mp4`.
 
 ### Datos de prueba sembrados (ambiente de desarrollo)
 
-Ya existen datos de prueba en el proyecto Supabase para desarrollar el visor sin
-depender del panel ni del flujo real de pairing:
+Datos base en el proyecto Supabase para desarrollar/probar sin depender del `panel`
+(que todavía no existe):
 
 - `companies`: 1 fila, "Gym Test" (`id = 11111111-1111-1111-1111-111111111111`)
-- `media`: 2 filas — `foto1.jpg` (image) y `video1.mp4` (video), ambos en
+- `media`: archivos de prueba (imagen/video) en
   `media/11111111-1111-1111-1111-111111111111/` en el bucket de Storage
-- `playlists`: 1 fila, "Playlist Gym", ya con `published_at` seteado (publicada)
-- `playlist_items`: 2 filas — foto en `order_index 0`, video en `order_index 1`
-- `screens`: 1 fila, "TV_PRUEBA", con `device_uuid =
-66666666-6666-6666-6666-666666666666`, ya "emparejada" (`status = 'paired'`) y con
-  `current_playlist_id` apuntando a "Playlist Gym"
-
-Este `device_uuid` (`66666666-...`) es el que debe usar `weluk-browser` hardcodeado
-temporalmente durante el desarrollo inicial, para probar la lectura y reproducción
-**sin implementar aún el flujo real de pairing** (eso viene después, ver sección 6).
-pairing_codes — code, device_uuid, status, expires_at
-
-```
+- `playlists`: "Playlist Gym" y "Playlist Test 2", ambas con `published_at` seteado
+- `screens` / `pairing_codes`: **vacías por defecto** — el flujo real de pairing
+  (sección 6) ya está implementado y es la única forma de crear una fila en `screens`;
+  ya no se usa un `device_uuid` hardcodeado. Para reclamar un código a mano (mientras
+  no existe el `panel`), ver el patrón de SQL en la sección 6.
 
 ### Detección de pantalla conectada/desconectada
 
@@ -258,6 +307,41 @@ están en estado `pending`. Se pueden reutilizar libremente una vez expirados/re
 en el propio visor) para desvincular una pantalla sin reinstalar la app — vuelve al
 estado de pantalla de espera con código nuevo.
 
+**✅ Implementado y validado en `visor-web` (26-27 julio 2026):**
+
+- Código de **5 caracteres**, alfabeto `23456789ABCDEFGHJKMNPQRSTUVWXYZ` (sin 0/O/1/I/L),
+  expiración de 15 min.
+- `device_uuid` persistente en `localStorage` (`src/lib/device.js`), con fallback manual
+  de generación de UUID cuando `crypto.randomUUID` no está disponible (ver sección 3).
+- El código pendiente actual también se guarda en `localStorage` junto a su
+  `expires_at` (`src/lib/pairingCode.js`) — un refresh mientras sigue vigente lo reusa
+  en vez de generar uno nuevo (evita filas basura en `pairing_codes`); cuando expira,
+  un timer genera uno nuevo automáticamente, sin intervención manual.
+- "Disconnect this screen" implementado en el overlay de diagnóstico (`Overlay.vue`):
+  hace `UPDATE screens SET status='disconnected'`, y el visor vuelve a pairing en vivo
+  sin recargar la página (requiere la policy de UPDATE de `anon` — ver gotcha de RLS
+  en sección 4).
+- **Validado con 3 dispositivos reales simultáneos** (2 Smart TVs + notebook): cada uno
+  con su propia identidad, sin interferencia entre canales Realtime, incluyendo cambio
+  de playlist dirigido a una sola pantalla mientras las otras seguían activas.
+- Mientras no existe el `panel`, el "claim" se simula a mano en el SQL Editor de
+  Supabase — patrón reutilizado durante todo el desarrollo:
+  ```sql
+  insert into screens (company_id, device_uuid, name, status, current_playlist_id)
+  select '<company_id>', device_uuid, '<nombre>', 'paired', '<playlist_id>'
+  from pairing_codes
+  where code = '<CÓDIGO>' and status = 'pending' and expires_at > now()
+  on conflict (device_uuid) do update
+  set status = 'paired', current_playlist_id = excluded.current_playlist_id;
+
+  update pairing_codes set status = 'claimed', claimed_at = now()
+  where code = '<CÓDIGO>' and status = 'pending';
+  ```
+- **Pendiente:** limpieza de `pairing_codes` con `status = 'pending'` ya vencidos —
+  por ahora se borra a mano (`delete from pairing_codes where status = 'pending' and
+  expires_at < now();`); una solución automática (una sola fila pendiente por
+  dispositivo, o `pg_cron`) queda para cuando exista el `panel`.
+
 ---
 
 ## 7. Reproducción y caché local (crítico, no opcional)
@@ -290,6 +374,66 @@ esperada (pocos cambios al mes) es mínimo.
 red de seguridad adicional al Realtime, para el caso de que el websocket se caiga y no
 reconecte silenciosamente. No reemplaza el mecanismo principal, es solo respaldo.
 
+**✅ Implementado en `visor-web` (26 julio 2026, corregido a fondo el 27):** usa la
+**Cache API** del navegador (`caches.open()`, `src/lib/mediaCache.js`) — no
+`localStorage` (no sirve para binarios) ni Service Worker (no hace falta para este
+caso). Nota para `apk` (React Native): ahí corresponde `react-native-fs`, no Cache API
+(específica de navegador) — la lógica/regla es la misma, la implementación no se porta.
+
+### 🔥 Incidente de egress (27 julio 2026) — 8.58 GB quemados en horas con 3 pantallas
+
+La primera versión del caché degradaba a **servir la URL remota directo** cuando la
+Cache API no estaba disponible. Eso no es una degradación aceptable: significa
+**re-descargar el archivo completo en cada vuelta del loop, para siempre**. Un video de
+20 MB loopeando cada 30 s son ~2.4 GB/hora **por pantalla**. Con 3 dispositivos de
+prueba se pasó el límite de 5 GB/mes del plan free en un par de horas. Con 10 pantallas
+serían ~17 TB/mes.
+
+**Por qué el caché estaba apagado justo en las TVs:** `CacheStorage` es
+**secure-context-only** (HTTPS o `localhost`) y existe recién desde **Chrome 40**.
+Probando por `http://<ip-lan>` o en una TV vieja, `typeof caches === 'undefined'` y el
+fallback entraba en silencio. **Es exactamente el mismo tipo de trampa que
+`crypto.randomUUID` en la sección 3** — misma causa, mismo síntoma invisible.
+
+**Reglas que salen de esto (innegociables, aplican también a `apk`):**
+
+1. **Ningún camino de degradación puede terminar en descarga-por-loop.** La cascada es
+   `memoria → disco → red (una sola vez)`. Si no hay caché en disco, igual se guarda un
+   blob en memoria: el peor caso pasa a ser "una descarga por sesión", nunca por vuelta.
+2. **Nunca mostrar la URL remota mientras se espera el blob.** Servir `item.url` como
+   placeholder hacía que el `<img>`/`<video>` bajara el archivo por su cuenta, en
+   paralelo al fetch del caché (doble descarga en frío) y en cada loop después.
+   Preferir pantalla en negro un instante.
+3. **`QuotaExceededError` de `cache.put` debe atraparse.** Antes se propagaba y mataba
+   la resolución del resto de la playlist, dejando esos ítems remotos permanentemente.
+4. **Deduplicar descargas en vuelo** — la precarga en background y el ítem que se va a
+   reproducir pedían el mismo archivo a la vez.
+5. **`cache.match(url, { ignoreVary: true })`** — Supabase Storage sirve por su CDN y
+   devuelve headers `Vary`; sin esto un match legítimo puede fallar y disparar una
+   re-descarga fantasma.
+6. **Pedir `navigator.storage.persist()` al arrancar** — el Cache Storage es "best
+   effort" y una TV de 1-2 GB corriendo 24/7 lo desaloja bajo presión de memoria.
+7. **El overlay debe mostrar el estado real del caché** (contexto seguro, Cache API
+   disponible, bytes descargados en la sesión, hits de disco/memoria, cuota). Sin esa
+   visibilidad el modo degradado es indetectable hasta ver la factura.
+
+**Regla operativa de pruebas:** probar en TVs **solo contra la URL HTTPS de Vercel**,
+nunca `http://<ip-lan>:5173` ni `:4173`. En HTTP plano por IP no hay caché de medios
+(ni `crypto.randomUUID`), así que cualquier prueba de consumo ahí no representa
+producción y además quema egress real.
+
+**Pendiente para el `panel`:** subir los medios con `cacheControl: '31536000'` — el
+`storage_path` es inmutable por archivo, así que el caché HTTP del navegador sirve de
+red de seguridad bajo la Cache API. Y el "Cached Egress" del dashboard de Supabase es
+egress servido desde su CDN: **igual se factura**, no salva nada.
+
+**Nota de corrección (27 julio 2026):** una playlist con **un solo ítem** no
+loopeaba — el índice `(0 + 1) % 1 = 0` no cambia de valor, así que nada disparaba el
+reinicio. Fix en `Player.vue`: cuando el índice no cambia, se fuerza el reinicio a mano
+(reset de `currentTime` + `.play()` para video, re-agendar el timer para imagen). Vale
+la pena que el `panel` sepa que una playlist de un solo ítem es un caso válido y
+soportado, no un estado raro.
+
 ---
 
 ## 8. Modelo comercial (referencia, no bloqueante para el MVP técnico)
@@ -313,14 +457,22 @@ acceso y SLA), algo que las herramientas self-serve de terceros no resuelven bie
 ## 9. Scope del MVP (v1)
 
 **Dentro de v1:**
-1. Visor + pairing (código corto, ver sección 6)
-2. CRUD de pantallas
-3. Upload de contenido (imagen y video, sin editor de diseño online)
-4. CRUD de playlists (orden, duración por ítem, loop simple)
-5. Schedule (asignar playlist a pantalla por rango horario/fecha)
-6. Sync al player (Realtime + draft/publish, ver secciones 5 y 6)
-7. Overlay de diagnóstico en el visor: identidad de pantalla + playlist actual,
-   botón de refresh manual, botón fullscreen, disconnect/reset
+1. ✅ Visor + pairing (código corto, ver sección 6) — implementado y validado en
+   `visor-web` con 3 dispositivos reales simultáneos (2 Smart TVs + notebook)
+2. CRUD de pantallas — **pendiente, vive en el `panel`** (no existe todavía)
+3. Upload de contenido (imagen y video, sin editor de diseño online) — **pendiente,
+   `panel`**
+4. CRUD de playlists (orden, duración por ítem, loop simple) — **pendiente, `panel`**;
+   el loop simple del lado del visor ya está implementado y probado (ver sección 7)
+5. Schedule (asignar playlist a pantalla por rango horario/fecha) — **pendiente,
+   `panel`**
+6. ✅ Sync al player (Realtime + draft/publish, ver secciones 5 y 6) — implementado y
+   validado: cambio de playlist y republicación de contenido, con aislamiento
+   confirmado entre pantallas concurrentes
+7. ✅ Overlay de diagnóstico en el visor: identidad de pantalla + playlist actual,
+   `device_uuid`, resolución, memoria (heap usado/total), user agent, botón de refresh
+   manual, botón fullscreen, listar/vaciar caché, disconnect real (con vuelta a
+   pairing en vivo, sin recargar)
 
 **Fuera de v1 (deliberado):**
 - Integraciones externas (Instagram, Canva, YouTube, RSS, etc.)
@@ -375,18 +527,20 @@ primero es: pairing + Realtime + caché local + comportamiento en hardware real.
 
 ## 12. Preguntas abiertas / pendientes de definir
 
-- Largo y alfabeto exacto del código de pairing (definido: 4-6 caracteres, sin
-  ambigüedad visual — falta cerrar el número exacto).
-- Qué pasa en el panel cuando alguien escribe un código inválido o expirado (UX de
-  error).
-- Detalle exacto del overlay de diagnóstico del visor (qué mostrar, qué botones,
-  prioridad de implementación).
+- ~~Largo y alfabeto exacto del código de pairing~~ — **resuelto**: 5 caracteres,
+  alfabeto `23456789ABCDEFGHJKMNPQRSTUVWXYZ`.
+- ~~Detalle exacto del overlay de diagnóstico del visor~~ — **resuelto**, ver sección 9.
+- Qué pasa en el `panel` cuando alguien escribe un código inválido o expirado (UX de
+  error) — sigue pendiente, es trabajo del `panel` (no existe todavía).
 - Política formal de compresión/limpieza de contenido para no tocar el límite de
   1 GB de storage.
 - Definir si el "Publicar cambios" es por pantalla individual o permite batch
   (varias pantallas de un mismo cliente a la vez).
-- Validar en hardware real (Onn + al menos una Smart TV) antes de cerrar del todo
-  la arquitectura del visor-web.
+- Limpieza automática de `pairing_codes` vencidos (hoy manual, ver sección 6).
+- Validar en hardware real: **Smart TV — parcialmente resuelto** (Samsung viejo: legacy
+  build necesario, ver sección 3; LG: `localStorage` sobrevive apagado/encendido
+  completo, confirmado 27 julio 2026). **Onn (box Android) — sigue pendiente**, nunca
+  se probó.
 
 ---
 
