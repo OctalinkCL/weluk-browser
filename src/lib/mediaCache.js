@@ -165,6 +165,31 @@ export function pruneBlobUrls(keepRemoteUrls) {
   }
 }
 
+// Borra del disco (Cache Storage) los archivos que ya no están en la playlist vigente.
+// Sin esto, cada cambio de contenido deja el archivo anterior huérfano en disco para
+// siempre — con playlists cambiando semana a semana durante meses, esos huérfanos
+// terminan compitiendo por la misma cuota que necesita el contenido activo.
+//
+// Se llama únicamente cuando cambia QUÉ debería estar cacheado (nueva playlist
+// publicada), nunca al desmontar el player o desconectar la pantalla — una
+// reconexión rápida con la misma playlist debe poder reusar lo que ya hay en disco
+// sin volver a descargar todo.
+export async function evictStaleDisk(keepRemoteUrls) {
+  const cache = await openCache()
+  if (!cache) return
+
+  const keep = new Set(keepRemoteUrls)
+
+  try {
+    const requests = await cache.keys()
+    await Promise.all(
+      requests.filter((request) => !keep.has(request.url)).map((request) => cache.delete(request)),
+    )
+  } catch {
+    // Best effort — un fallo acá no debe interrumpir la reproducción.
+  }
+}
+
 export function releaseAllBlobUrls() {
   pruneBlobUrls([])
 }

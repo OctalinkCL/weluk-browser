@@ -125,6 +125,38 @@ que el visor se cayera en el TV real (que accedía por IP, no por una URL HTTPS)
   desarrollo, o si alguna vez se prueba en el TV apuntando directo a una IP en vez de una
   URL HTTPS real.
 
+### Matriz de compatibilidad de hardware real (validado 27-28 julio 2026)
+
+Tres Smart TVs distintas probadas contra el deploy real de Vercel (nunca por IP de LAN,
+ver regla operativa en sección 7). Los datos de "cuota" salen de `navigator.storage.estimate()`
+leído desde el overlay — cuando el navegador no lo soporta, se descubre por bisección
+(el `QuotaExceededError` de `cache.put` aparece o no según el tamaño del archivo).
+
+| Dispositivo | Navegador | `blob:` en `<video>` | Cache API (disco) | Cuota observada |
+| --- | --- | --- | --- | --- |
+| Samsung (viejo) | Tizen 4.0, Chrome 56 | ❌ No reproduce — falla en silencio, sin `MediaError` | ✅ Existe, pero insuficiente para un video de 11 MB (`QuotaExceededError`) | Muy baja (rechaza 11 MB) |
+| LG | NetCast, Chrome 79 | ✅ | ✅ | 315.2 MiB |
+| Samsung (nuevo) | Tizen 6.0, Chrome 120 | ✅ | ✅ | 80.0 MiB |
+
+**Hallazgo crítico del Samsung viejo:** el video nunca se reproduce y **no lanza ningún
+error observable** (ni evento `error`, ni rechazo de `play()`) — el reproductor nativo de
+Tizen 4 no entiende `blob:` URLs y falla mudo. Sin el watchdog de reproducción (sección 7)
+esa pantalla se queda en negro para siempre sin que nadie se entere. Confirmado además que
+`d.juuno.co` (competidor validado) tampoco carga en este mismo TV — es un techo real de
+hardware, no algo que se pueda arreglar por software. **Decisión: ese modelo queda fuera
+del piso soportado por navegador; el camino para clientes con ese hardware es box/stick
+Android + APK, no el visor web.**
+
+**`performance.memory` no es confiable en estos navegadores.** Tanto el LG como el Samsung
+nuevo reportaron memoria "usada/total" idéntica y estática durante horas (en un caso,
+usada > total, matemáticamente imposible). Tratar ese campo del overlay como orientativo,
+nunca como señal dura de memory leak en este tipo de hardware.
+
+**La cuota de disco varía muchísimo entre dispositivos** (80 MiB a 315 MiB, y prácticamente
+cero en el Samsung viejo) — el diseño de caché no puede asumir que el contenido siempre
+cabrá en disco; el fallback a memoria (sección 7) es lo que sostiene la reproducción cuando
+no cabe, no un caso extremo raro.
+
 ---
 
 ## 4. Backend / Datos
@@ -434,6 +466,93 @@ reinicio. Fix en `Player.vue`: cuando el índice no cambia, se fuerza el reinici
 la pena que el `panel` sepa que una playlist de un solo ítem es un caso válido y
 soportado, no un estado raro.
 
+### ✅ Validación en hardware real (28 julio 2026) — confirmado, no solo teórico
+
+Tras aplicar la cascada de 3 niveles (memoria → disco → red una sola vez), se probó el
+escenario exacto del incidente: un video en loop, en dos TVs reales (LG y Samsung nuevo,
+ver matriz de hardware en sección 3), durante **más de una hora continua** cada una.
+
+- **Overlay:** "Descargado en esta sesión" quedó clavado en el peso del archivo (11.4 MiB)
+  durante toda la prueba, sin importar cuántas vueltas dio el loop.
+- **Cruce con el dashboard de Supabase (ground truth, no solo el instrumento local):** el
+  delta de "Cached Egress" entre mediciones coincidió, byte a byte, con lo que reportaba
+  el overlay — nunca hubo una descarga fantasma que el overlay no viera.
+- Una TV corrió toda la noche (sin apagado automático desactivado) y se apagó sola tras
+  varias horas — **fue el timer de apagado del TV, no un fallo de la app** (ver hallazgo
+  de auto-apagado más abajo). Otra corrió con el apagado automático desactivado a
+  propósito, específicamente para sostener sesiones largas sin intervención.
+
+**Conclusión:** la regla "nunca descargar en loop" queda validada empíricamente, no solo
+implementada. Sigue pendiente probar el caso de cuota agotada por acumulación de varios
+archivos pesados en un dispositivo de cuota chica (ver hallazgo de huérfanos en disco).
+
+### 🐛 Bug de reproducción tras quitar el fallback remoto (28 julio 2026)
+
+Al eliminar el fallback a `item.url` (regla 2 del incidente de egress), el `<video>`
+quedó en **pantalla negra silenciosa** — el video nunca arrancaba, sin error visible. Causa:
+`displaySrc.value = ...` es una asignación reactiva de Vue, no se aplica al DOM de
+inmediato; llamar `videoEl.value.play()` en la misma función corría contra un `<video>`
+que todavía tenía el `src` anterior (vacío). Fix en `Player.vue`: `await nextTick()`
+antes de tocar el elemento, más `el.load()` explícito cuando el `src` cambió (algunos
+navegadores de TV no recargan solos al cambiar el `src` de un elemento ya montado).
+
+**Watchdog de reproducción agregado como red de seguridad:** si a los 10 s no llegó el
+evento `playing`, se asume que el video no va a arrancar (códec no soportado, `blob:` no
+reproducible — ver Samsung viejo en la matriz de sección 3) y se fuerza `advance()`. Una
+pantalla de signage no puede quedarse negra en silencio indefinidamente en ningún
+hardware; el overlay muestra el motivo exacto (`MediaError` code o rechazo de `play()`)
+en el campo "Reproducción", clave para diagnosticar sin devtools en la TV.
+
+### 🗑️ Huérfanos en disco (28 julio 2026)
+
+La cascada de caché libera los blob URLs de memoria cuando cambia la playlist
+(`pruneBlobUrls`), pero **no borraba nada del disco** — cada archivo reemplazado o
+descartado quedaba en la Cache Storage del navegador para siempre. Con un cliente
+cambiando contenido semana a semana durante meses, esos archivos huérfanos terminan
+compitiendo por la misma cuota que necesita el contenido activo, y pueden gatillar el
+mismo `QuotaExceededError` de la sección 3 sin que la playlist vigente sea pesada — la
+causa sería basura acumulada, no el contenido actual.
+
+**Fix:** `evictStaleDisk()` en `mediaCache.js`, llamado solo cuando cambia qué debería
+estar cacheado (playlist republicada), nunca al desconectar o desmontar el player — una
+reconexión rápida con la misma playlist debe poder reusar lo que ya hay en disco sin
+volver a descargar todo. El disco queda siempre acotado al tamaño de la playlist vigente,
+sin importar cuántos cambios de contenido hayan pasado antes.
+
+### ⏻ Apagado automático del TV — gotcha operativo, no de software (28 julio 2026)
+
+Una TV con el video corriendo se apagó sola tras varias horas sin que nadie tocara el
+control remoto. **No es un bug de la app** — la mayoría de los Smart TVs traen un timer
+de apagado automático (4h es común) pensado para uso doméstico, ciego al contenido en
+pantalla: no sabe que un navegador en modo kiosco está reproduciendo a propósito.
+
+**Acción de instalación (no de código):** desactivar explícitamente "Auto Power Off" /
+"Eco - Apagado automático" / protector de pantalla en la configuración de cada TV antes
+de dejarla en producción. Sin esto, cualquier pantalla instalada se va a apagar sola cada
+cierto tiempo sin importar qué tan bien esté el software. Vale la pena agregarlo como
+paso obligatorio del checklist de instalación cuando exista el `panel`.
+
+### Contenido esperado en el piloto (28 julio 2026)
+
+Definido con el equipo para calibrar la política de compresión pendiente (sección 12):
+mayoría imágenes, videos ocasionales de **5-7 MB** (el peso típico de un promocional
+hecho en Canva), tope de **~5 slides por playlist**. Probado también con un archivo de
+**50 MB** (el máximo que permite el bucket, ver sección 5) para validar el caso límite de
+cuota. Con estos tamaños, el consumo diario esperado por pantalla es trivial — el riesgo
+real de cuota de disco (sección 3) aparece por acumulación de contenido viejo sin purgar
+(ver huérfanos en disco arriba), no por el peso de una playlist puntual.
+
+### Decisión de hardware para el piloto: box/stick con APK preinstalada, no navegador
+
+El plan de despliegue para clientes reales es entregar un box o stick Android con la
+**APK ya instalada**, no depender del navegador integrado del TV. Esto saca de la
+ecuación toda la categoría de bugs encontrada en la matriz de hardware de la sección 3
+(`blob:` no reproducible, cuotas de disco minúsculas o inconsistentes,
+`performance.memory` no confiable) — `react-native-fs` no tiene el concepto de cuota de
+navegador. El navegador integrado (`visor-web`, este repo) queda como camino para el
+cliente cuyo TV no acepta box externo; la matriz de hardware de la sección 3 es la
+referencia para saber si ese TV específico va a andar bien o no.
+
 ---
 
 ## 8. Modelo comercial (referencia, no bloqueante para el MVP técnico)
@@ -533,18 +652,24 @@ primero es: pairing + Realtime + caché local + comportamiento en hardware real.
 - Qué pasa en el `panel` cuando alguien escribe un código inválido o expirado (UX de
   error) — sigue pendiente, es trabajo del `panel` (no existe todavía).
 - Política formal de compresión/limpieza de contenido para no tocar el límite de
-  1 GB de storage.
+  1 GB de storage — ver "Contenido esperado en el piloto" en sección 7 para los tamaños
+  reales acordados (imágenes + videos de 5-7 MB, tope 5 slides).
 - Definir si el "Publicar cambios" es por pantalla individual o permite batch
   (varias pantallas de un mismo cliente a la vez).
 - Limpieza automática de `pairing_codes` vencidos (hoy manual, ver sección 6).
-- Validar en hardware real: **Smart TV — parcialmente resuelto** (Samsung viejo: legacy
-  build necesario, ver sección 3; LG: `localStorage` sobrevive apagado/encendido
-  completo, confirmado 27 julio 2026). **Onn (box Android) — sigue pendiente**, nunca
-  se probó.
+- Validar en hardware real: **Smart TV — resuelto para 3 dispositivos** (matriz completa
+  en sección 3: Samsung viejo Tizen 4 no reproduce `blob:` en `<video>`, LG NetCast y
+  Samsung Tizen 6 sí, con cuotas de disco muy distintas entre sí). **Onn (box Android) —
+  sigue pendiente**, nunca se probó — aunque su relevancia baja con la decisión de usar
+  box/stick con APK preinstalada (sección 7) en vez del navegador integrado.
+- Checklist de instalación por pantalla — nuevo, sale de las pruebas del 28 julio:
+  desactivar el apagado automático del TV (ver sección 7), confirmar que el `panel` sepa
+  qué modelos de TV quedan fuera del piso soportado por navegador (sección 3).
 
 ---
 
-*Última actualización: reunión de directorio + equipo de desarrollo, julio 2026.
-Este documento debe vivir en los 4 repos (o ser referenciado desde ellos) y
-actualizarse a medida que se tomen nuevas decisiones.*
+*Última actualización: 28 julio 2026 — validación en hardware real del incidente de
+egress, bug de reproducción, huérfanos en disco, y decisión de hardware con APK
+preinstalada (ver sección 7). Este documento debe vivir en los 4 repos (o ser
+referenciado desde ellos) y actualizarse a medida que se tomen nuevas decisiones.*
 ```
