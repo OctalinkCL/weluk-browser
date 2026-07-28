@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { supabase } from '../lib/supabase'
-import { pruneBlobUrls, releaseAllBlobUrls, resolveMedia } from '../lib/mediaCache'
+import { evictStaleDisk, pruneBlobUrls, releaseAllBlobUrls, resolveMedia } from '../lib/mediaCache'
 import Overlay from './Overlay.vue'
 
 const props = defineProps({
@@ -171,6 +171,7 @@ function pruneResolved(urls) {
 
   resolved = next
   pruneBlobUrls(urls)
+  evictStaleDisk(urls)
 }
 
 async function fetchAndSetItems(playlistId, { resetIndex }) {
