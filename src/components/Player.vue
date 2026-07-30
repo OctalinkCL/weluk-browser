@@ -25,6 +25,7 @@ const overlayVisible = ref(false)
 // texto es la única pista de por qué la pantalla está en negro.
 const mediaStatus = ref(null)
 let playbackWatchdog = null
+let videoDurationTimer = null
 
 const currentPlaylistId = ref(null)
 let lastPublishedAt = null
@@ -50,13 +51,16 @@ function advance() {
 
 function scheduleCurrentItem() {
   clearTimeout(imageTimer)
+  clearTimeout(videoDurationTimer)
   const item = currentItem.value
   if (!item) return
 
   if (item.type === 'image') {
     imageTimer = setTimeout(advance, item.duration * 1000)
   }
-  // Para video, el avance lo dispara el evento @ended del <video>.
+  // Para video, el corte por duración se arma recién en el evento `playing` (ver
+  // armVideoDurationTimer) — así el tiempo de buffering antes de arrancar no le resta
+  // segundos a la duración configurada. Si no hay duración válida, manda el @ended nativo.
 }
 
 async function playCurrentItem() {
@@ -106,9 +110,19 @@ function armPlaybackWatchdog() {
   }, 10000)
 }
 
+// Corta el video antes si `duration_seconds` (configurado en el panel) es menor a su
+// largo real. Si el video termina solo antes de que este timer dispare, onVideoEnded
+// ya lo cancela — así nunca hay doble avance.
+function armVideoDurationTimer(durationSeconds) {
+  clearTimeout(videoDurationTimer)
+  if (!Number.isFinite(durationSeconds)) return
+  videoDurationTimer = setTimeout(advance, durationSeconds * 1000)
+}
+
 function onVideoPlaying() {
   clearTimeout(playbackWatchdog)
   mediaStatus.value = null
+  armVideoDurationTimer(currentItem.value?.duration)
 }
 
 function onVideoError() {
@@ -142,6 +156,7 @@ async function showCurrentItem() {
 
 function onVideoEnded() {
   clearTimeout(playbackWatchdog)
+  clearTimeout(videoDurationTimer)
   advance()
 }
 
@@ -322,6 +337,7 @@ onMounted(async () => {
 onUnmounted(() => {
   clearTimeout(imageTimer)
   clearTimeout(playbackWatchdog)
+  clearTimeout(videoDurationTimer)
   if (screenChannel) supabase.removeChannel(screenChannel)
   teardownPlaylistChannel()
   resolveGeneration += 1
@@ -336,21 +352,23 @@ watch(currentItem, () => {
 
 <template>
   <div class="player" @click="toggleOverlay">
-    <img v-if="currentItem?.type === 'image'" :key="currentItem.url" :src="displaySrc" class="media" />
-    <video
-      v-else-if="currentItem?.type === 'video'"
-      :key="currentItem.url"
-      ref="videoEl"
-      :src="displaySrc"
-      class="media"
-      autoplay
-      muted
-      playsinline
-      @ended="onVideoEnded"
-      @playing="onVideoPlaying"
-      @error="onVideoError"
-    />
-    <p v-else-if="error" class="message">{{ error }}</p>
+    <Transition name="fade" mode="out-in">
+      <img v-if="currentItem?.type === 'image'" :key="currentItem.url" :src="displaySrc" class="media" />
+      <video
+        v-else-if="currentItem?.type === 'video'"
+        :key="currentItem.url"
+        ref="videoEl"
+        :src="displaySrc"
+        class="media"
+        autoplay
+        muted
+        playsinline
+        @ended="onVideoEnded"
+        @playing="onVideoPlaying"
+        @error="onVideoError"
+      />
+      <p v-else-if="error" class="message">{{ error }}</p>
+    </Transition>
 
     <button v-if="!fullscreenPrimed" class="fullscreen-button" @click.stop="activateFullscreen">
       Pantalla completa
@@ -383,6 +401,16 @@ watch(currentItem, () => {
   width: 100vw;
   height: 100vh;
   object-fit: cover;
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.5s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 
 .message {
