@@ -352,21 +352,23 @@ watch(currentItem, () => {
 
 <template>
   <div class="player" @click="toggleOverlay">
-    <img v-if="currentItem?.type === 'image'" :key="currentItem.url" :src="displaySrc" class="media" />
-    <video
-      v-else-if="currentItem?.type === 'video'"
-      :key="currentItem.url"
-      ref="videoEl"
-      :src="displaySrc"
-      class="media"
-      autoplay
-      muted
-      playsinline
-      @ended="onVideoEnded"
-      @playing="onVideoPlaying"
-      @error="onVideoError"
-    />
-    <p v-else-if="error" class="message">{{ error }}</p>
+    <Transition name="fade" mode="out-in">
+      <img v-if="currentItem?.type === 'image'" :key="currentItem.url" :src="displaySrc" class="media" />
+      <video
+        v-else-if="currentItem?.type === 'video'"
+        :key="currentItem.url"
+        ref="videoEl"
+        :src="displaySrc"
+        class="media"
+        autoplay
+        muted
+        playsinline
+        @ended="onVideoEnded"
+        @playing="onVideoPlaying"
+        @error="onVideoError"
+      />
+      <p v-else-if="error" class="message">{{ error }}</p>
+    </Transition>
 
     <button v-if="!fullscreenPrimed" class="fullscreen-button" @click.stop="activateFullscreen">
       Pantalla completa
@@ -399,6 +401,16 @@ watch(currentItem, () => {
   width: 100vw;
   height: 100vh;
   object-fit: cover;
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.5s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 
 .message {
