@@ -231,18 +231,35 @@ create policy "anon puede leer screens por device_uuid"
   using (true);
 
 -- El visor necesita poder desconectarse a sí mismo (botón "Disconnect" del overlay
--- de diagnóstico, sección 9 del CLAUDE.md) — mismo problema de no poder restringir
--- por fila sin auth real; se acepta el mismo tradeoff que en las policies de arriba.
--- OJO: una policy de UPDATE necesita SÍ o SÍ el `with check` además del `using` —
--- sin él, PostgREST responde 204 pero afecta 0 filas (el UPDATE se descarta en
--- silencio), lo que parece éxito desde el cliente pero no cambia nada en la base.
-grant update on screens to anon;
+-- de diagnóstico, sección 9 del CLAUDE.md). NO se usa una policy de UPDATE/DELETE
+-- abierta para anon (using(true) permitía tocar CUALQUIER pantalla de CUALQUIER
+-- company con solo la anon key, que es pública — corregido 30 julio 2026). En su
+-- lugar, una función security definer auto-limitada a la fila del device_uuid
+-- recibido como parámetro: el device_uuid funciona como token de capacidad (alta
+-- entropía, generado con crypto.randomUUID), suficiente prueba de identidad para
+-- un cliente anon sin sesión — pero un usuario autenticado del panel NO debe
+-- reusar esta función, ya tiene ownership real vía auth_company_id().
+--
+-- "Eliminar pantalla" es de un solo paso (como Juuno, sin estado intermedio
+-- 'disconnected'): desconectar = borrar la fila, libera el device_uuid de
+-- inmediato sin que un admin tenga que borrar manualmente después.
+create or replace function disconnect_own_screen(p_device_uuid uuid)
+returns setof screens
+language sql
+security definer
+as $$
+  delete from screens where device_uuid = p_device_uuid returning *;
+$$;
 
-create policy "anon puede desconectar su propia pantalla"
-  on screens for update
-  to anon
-  using (true)
-  with check (true);
+grant execute on function disconnect_own_screen(uuid) to anon;
+
+-- Necesario para que Realtime pueda filtrar eventos DELETE por device_uuid. Por
+-- defecto (REPLICA IDENTITY DEFAULT) Postgres solo incluye la primary key (`id`)
+-- en la fila "old" de un DELETE — como device_uuid no es la PK, un filtro
+-- `device_uuid=eq.X` sobre un evento DELETE nunca matchea y el visor no se entera
+-- nunca de que su pantalla fue borrada (falla en silencio, mismo patrón que el
+-- gotcha de RLS de la sección 4 del CLAUDE.md). FULL incluye todas las columnas.
+alter table screens replica identity full;
 
 -- --- Policies: playlists, playlist_items, media (anon, solo lectura) ---
 create policy "anon puede leer playlists publicadas"

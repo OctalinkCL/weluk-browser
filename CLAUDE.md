@@ -337,7 +337,10 @@ están en estado `pending`. Se pueden reutilizar libremente una vez expirados/re
 
 **Función de "Disconnect this screen"**: debe existir (tanto en panel como posiblemente
 en el propio visor) para desvincular una pantalla sin reinstalar la app — vuelve al
-estado de pantalla de espera con código nuevo.
+estado de pantalla de espera con código nuevo. **Es de un solo paso, sin estado
+intermedio `disconnected`** (mismo patrón que Juuno): desconectar = borrar la fila de
+`screens`, libera el `device_uuid` de inmediato sin que un admin tenga que entrar
+después a borrarla a mano.
 
 **✅ Implementado y validado en `visor-web` (26-27 julio 2026):**
 
@@ -363,6 +366,27 @@ estado de pantalla de espera con código nuevo.
   que hacía ese `UPDATE` directo — ya migrado a RPC. Cualquier otro `UPDATE` directo de
   `anon`/`authenticated` sobre `screens` que se agregue a futuro (en este repo o en
   `panel`) debe pasar por una función equivalente, no por una policy abierta.
+- **Cambio a un solo paso (30 julio 2026, junto con `panel`):** `disconnect_own_screen`
+  pasó de `UPDATE ... SET status='disconnected'` a `DELETE ... WHERE device_uuid =
+  p_device_uuid RETURNING *` — mismo modelo de seguridad (security definer, auto-
+  limitada a la fila del `device_uuid` recibido), solo cambia la acción final. Esto
+  habilita que el `panel` borre la fila directo desde `paired` sin pasar primero por
+  `disconnected`.
+  - **`REPLICA IDENTITY FULL` en `screens` es obligatorio para esto** —
+    `alter table screens replica identity full;`. Sin esto, Postgres solo incluye la
+    primary key (`id`) en la fila "old" de un evento `DELETE`, y como el visor filtra
+    su canal Realtime por `device_uuid` (no es la PK), el filtro nunca matchea y el
+    evento se pierde en silencio — mismo patrón de falla invisible que el gotcha de
+    RLS de la sección 4.
+  - `Player.vue` (`subscribeToScreen`) escucha `event: '*'` en vez de solo `'UPDATE'`
+    sobre el canal `screen-${deviceUuid}`, y trata `payload.eventType === 'DELETE'`
+    igual que `status !== 'paired'`: vuelve a `Pairing.vue` en vivo, sin recargar.
+  - `loadScreen()` en `Player.vue` pasó de `.single()` a `.maybeSingle()` — la fila
+    puede haber sido borrada (por el propio disconnect o por el panel) justo entre el
+    chequeo inicial de `App.vue` y el mount de `Player.vue`; 0 filas ahora se trata
+    como "volver a pairing", no como error de red/config (mismo tipo de gotcha
+    `PGRST116` que el de `published_at`/`.single()` documentado en otras partes de
+    este documento).
 - **Validado con 3 dispositivos reales simultáneos** (2 Smart TVs + notebook): cada uno
   con su propia identidad, sin interferencia entre canales Realtime, incluyendo cambio
   de playlist dirigido a una sola pantalla mientras las otras seguían activas.
