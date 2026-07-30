@@ -267,20 +267,28 @@ async function setPlaylist(playlistId, { resetIndex }) {
 }
 
 async function loadScreen() {
+  // maybeSingle, no single: la fila puede haber sido borrada (Disconnect propio o un
+  // admin borrándola desde el panel) justo entre el chequeo inicial de App.vue y este
+  // mount — 0 filas es un estado válido, no un error de red/config.
   const { data: screen, error: screenError } = await supabase
     .from('screens')
     .select('name, current_playlist_id')
     .eq('device_uuid', props.deviceUuid)
-    .single()
+    .maybeSingle()
 
   if (screenError) {
     error.value = `No se pudo leer la pantalla: ${screenError.message}`
     return
   }
 
+  if (!screen) {
+    emit('disconnected')
+    return
+  }
+
   screenName.value = screen.name
 
-  if (!screen?.current_playlist_id) {
+  if (!screen.current_playlist_id) {
     error.value = 'La pantalla no tiene una playlist asignada.'
     return
   }
@@ -293,9 +301,13 @@ function subscribeToScreen() {
     .channel(`screen-${props.deviceUuid}`)
     .on(
       'postgres_changes',
-      { event: 'UPDATE', schema: 'public', table: 'screens', filter: `device_uuid=eq.${props.deviceUuid}` },
+      // '*' en vez de solo 'UPDATE': "Disconnect" ahora borra la fila (DELETE) en vez
+      // de marcarla 'disconnected' — un admin también puede borrarla directo desde el
+      // panel mientras está paired. Requiere REPLICA IDENTITY FULL en screens (ver
+      // weluk-schema.sql) para que el filtro por device_uuid matchee en un DELETE.
+      { event: '*', schema: 'public', table: 'screens', filter: `device_uuid=eq.${props.deviceUuid}` },
       async (payload) => {
-        if (payload.new.status !== 'paired') {
+        if (payload.eventType === 'DELETE' || payload.new.status !== 'paired') {
           emit('disconnected')
           return
         }
