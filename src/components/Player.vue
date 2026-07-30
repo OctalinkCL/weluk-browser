@@ -329,7 +329,25 @@ function subscribeToScreen() {
         await setPlaylist(newPlaylistId, { resetIndex: true })
       },
     )
-    .subscribe()
+    .subscribe((status) => {
+      // El panel escucha presence.sync sobre este mismo canal para mostrar
+      // online/offline en tiempo real (sección 5 del CLAUDE.md). track() una vez por
+      // conexión confirmada — no hace falta loop/timer, Supabase ya detecta sola la
+      // caída del websocket. Puede repetirse tras una reconexión (SUBSCRIBED de
+      // vuelta), y hay que re-anunciarse en ese caso: el servidor descarta el
+      // presence viejo cuando el socket se cae.
+      if (status === 'SUBSCRIBED') {
+        screenChannel.track({ online_at: new Date().toISOString() })
+      }
+    })
+}
+
+function handleDisconnected() {
+  // Desconexión voluntaria desde el propio overlay: el DELETE ya llega por el canal
+  // postgres_changes y dispara el mismo camino, pero untrack() de una vez evita
+  // reportarse "en línea" en el panel durante el instante entre el click y el unmount.
+  screenChannel?.untrack()
+  emit('disconnected')
 }
 
 function activateFullscreen() {
@@ -393,7 +411,7 @@ watch(currentItem, () => {
       :playlist-name="playlistName"
       :media-status="mediaStatus"
       @close="overlayVisible = false"
-      @disconnected="emit('disconnected')"
+      @disconnected="handleDisconnected"
     />
   </div>
 </template>
