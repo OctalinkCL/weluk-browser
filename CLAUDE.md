@@ -350,9 +350,19 @@ estado de pantalla de espera con código nuevo.
   en vez de generar uno nuevo (evita filas basura en `pairing_codes`); cuando expira,
   un timer genera uno nuevo automáticamente, sin intervención manual.
 - "Disconnect this screen" implementado en el overlay de diagnóstico (`Overlay.vue`):
-  hace `UPDATE screens SET status='disconnected'`, y el visor vuelve a pairing en vivo
-  sin recargar la página (requiere la policy de UPDATE de `anon` — ver gotcha de RLS
-  en sección 4).
+  llama a `supabase.rpc('disconnect_own_screen', { p_device_uuid })`, y el visor vuelve
+  a pairing en vivo sin recargar la página.
+- **Fix de seguridad (30 julio 2026, junto con el equipo de `panel`):** la policy de
+  `UPDATE` de `anon` sobre `screens` original era `using (true) with check (true)` —
+  sin filtrar por fila, permitía que cualquiera con la `anon key` (pública, va en el
+  bundle de este visor) modificara **cualquier pantalla de cualquier company**, incluso
+  todas a la vez en un solo request. Se reemplazó por la función
+  `disconnect_own_screen(p_device_uuid uuid) returns setof screens` (ya corrida en
+  Supabase) y se revocó el `UPDATE` directo sobre `screens` para `anon`
+  (`revoke update on screens from anon`). `Overlay.vue` es el único lugar de este repo
+  que hacía ese `UPDATE` directo — ya migrado a RPC. Cualquier otro `UPDATE` directo de
+  `anon`/`authenticated` sobre `screens` que se agregue a futuro (en este repo o en
+  `panel`) debe pasar por una función equivalente, no por una policy abierta.
 - **Validado con 3 dispositivos reales simultáneos** (2 Smart TVs + notebook): cada uno
   con su propia identidad, sin interferencia entre canales Realtime, incluyendo cambio
   de playlist dirigido a una sola pantalla mientras las otras seguían activas.
