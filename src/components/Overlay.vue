@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { supabase } from '../lib/supabase'
+import { APP_VERSION } from '../lib/version'
 import {
   cacheApiAvailable,
   cacheStats,
@@ -86,13 +87,13 @@ async function disconnect() {
   disconnecting.value = true
   disconnectError.value = null
 
-  // .select() devuelve las filas afectadas: si RLS bloquea el UPDATE, el PATCH
-  // igual responde 204/sin error pero afecta 0 filas — así lo detectamos.
-  const { data, error } = await supabase
-    .from('screens')
-    .update({ status: 'disconnected', current_playlist_id: null })
-    .eq('device_uuid', props.deviceUuid)
-    .select()
+  // El UPDATE directo sobre screens ya no tiene permiso para anon (la policy abierta
+  // using(true) with check(true) se reemplazó por esta función, que solo puede tocar
+  // la fila del device_uuid pasado). returns setof screens, así que data sigue
+  // llegando como array de filas.
+  const { data, error } = await supabase.rpc('disconnect_own_screen', {
+    p_device_uuid: props.deviceUuid,
+  })
 
   if (error) {
     disconnectError.value = error.message
@@ -101,7 +102,7 @@ async function disconnect() {
   }
 
   if (!data || data.length === 0) {
-    disconnectError.value = 'El servidor no aplicó el cambio (RLS). Falta la policy de UPDATE de anon en screens.'
+    disconnectError.value = 'El servidor no aplicó el cambio: no se encontró la pantalla.'
     disconnecting.value = false
     return
   }
@@ -124,6 +125,9 @@ async function disconnect() {
 
     <p class="label">Playlist actual</p>
     <p class="value">{{ playlistName ?? '—' }}</p>
+
+    <p class="label">Versión</p>
+    <p class="value">v{{ APP_VERSION }}</p>
 
     <p class="label">Device UUID</p>
     <p class="value small">{{ deviceUuid }}</p>
