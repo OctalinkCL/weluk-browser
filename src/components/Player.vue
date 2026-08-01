@@ -13,7 +13,6 @@ const emit = defineEmits(['disconnected'])
 const items = ref([])
 const currentIndex = ref(0)
 const error = ref(null)
-const fullscreenPrimed = ref(false)
 const displaySrc = ref(null)
 // url remota -> { url, source } devuelto por resolveMedia
 let resolved = new Map()
@@ -350,11 +349,6 @@ function handleDisconnected() {
   emit('disconnected')
 }
 
-function activateFullscreen() {
-  document.documentElement.requestFullscreen?.().catch(() => {})
-  fullscreenPrimed.value = true
-}
-
 function toggleOverlay() {
   overlayVisible.value = !overlayVisible.value
 }
@@ -399,10 +393,6 @@ watch(currentItem, () => {
       />
       <p v-else-if="error" class="message">{{ error }}</p>
     </Transition>
-
-    <button v-if="!fullscreenPrimed" class="fullscreen-button" @click.stop="activateFullscreen">
-      Pantalla completa
-    </button>
 
     <Overlay
       v-if="overlayVisible"
@@ -449,19 +439,5 @@ watch(currentItem, () => {
   font-size: 1.5rem;
   text-align: center;
   padding: 2rem;
-}
-
-.fullscreen-button {
-  position: fixed;
-  top: 1rem;
-  right: 1rem;
-  padding: 0.5rem 1rem;
-  background: #fff;
-  color: #000;
-  border: none;
-  border-radius: 4px;
-  font-family: sans-serif;
-  font-size: 1rem;
-  cursor: pointer;
 }
 </style>

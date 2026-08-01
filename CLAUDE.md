@@ -125,18 +125,19 @@ que el visor se cayera en el TV real (que accedía por IP, no por una URL HTTPS)
   desarrollo, o si alguna vez se prueba en el TV apuntando directo a una IP en vez de una
   URL HTTPS real.
 
-### Matriz de compatibilidad de hardware real (validado 27-28 julio 2026)
+### Matriz de compatibilidad de hardware real (validado 27-28 julio 2026, ampliado 31 julio 2026)
 
-Tres Smart TVs distintas probadas contra el deploy real de Vercel (nunca por IP de LAN,
+Smart TVs distintas probadas contra el deploy real de Vercel (nunca por IP de LAN,
 ver regla operativa en sección 7). Los datos de "cuota" salen de `navigator.storage.estimate()`
 leído desde el overlay — cuando el navegador no lo soporta, se descubre por bisección
 (el `QuotaExceededError` de `cache.put` aparece o no según el tamaño del archivo).
 
-| Dispositivo     | Navegador             | `blob:` en `<video>`                                  | Cache API (disco)                                                          | Cuota observada          |
-| --------------- | --------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------ |
-| Samsung (viejo) | Tizen 4.0, Chrome 56  | ❌ No reproduce — falla en silencio, sin `MediaError` | ✅ Existe, pero insuficiente para un video de 11 MB (`QuotaExceededError`) | Muy baja (rechaza 11 MB) |
-| LG              | NetCast, Chrome 79    | ✅                                                    | ✅                                                                         | 315.2 MiB                |
-| Samsung (nuevo) | Tizen 6.0, Chrome 120 | ✅                                                    | ✅                                                                         | 80.0 MiB                 |
+| Dispositivo       | Navegador                    | `blob:` en `<video>`                                  | Cache API (disco)                                                          | Cuota observada          |
+| ----------------- | ----------------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------ |
+| Samsung (viejo)   | Tizen 4.0, Chrome 56          | ❌ No reproduce — falla en silencio, sin `MediaError` | ✅ Existe, pero insuficiente para un video de 11 MB (`QuotaExceededError`) | Muy baja (rechaza 11 MB) |
+| LG                | NetCast, Chrome 79            | ✅                                                    | ✅                                                                         | 315.2 MiB                |
+| Samsung (nuevo)   | Tizen 6.0, Chrome 120         | ✅                                                    | ✅                                                                         | 80.0 MiB                 |
+| Hisense 32Q4SV    | VIDAA, UA reporta Chrome 111  | ❌ No reproduce — falla en silencio, sin `MediaError` | ✅ OK, persistente en disco (115.6 MiB de cuota, sin problema)             | 115.6 MiB                |
 
 **Hallazgo crítico del Samsung viejo:** el video nunca se reproduce y **no lanza ningún
 error observable** (ni evento `error`, ni rechazo de `play()`) — el reproductor nativo de
@@ -146,6 +147,22 @@ esa pantalla se queda en negro para siempre sin que nadie se entere. Confirmado 
 hardware, no algo que se pueda arreglar por software. **Decisión: ese modelo queda fuera
 del piso soportado por navegador; el camino para clientes con ese hardware es box/stick
 Android + APK, no el visor web.**
+
+**Hisense 32Q4SV (VIDAA), hallazgo del 31 julio 2026:** mismo síntoma exacto que el
+Samsung viejo (silencio total — watchdog de 10 s forzando el avance, sin `MediaError`,
+sin rechazo de `play()`), pero con un dato que sorprende: el user agent reporta
+`Chrome/111.0.0.0`, muy lejos de "viejo". La lectura correcta: en TVs, el string de
+Chrome del UA no refleja el pipeline nativo de decodificación de `<video>`, que muchos
+fabricantes (VIDAA incluido) parchean o congelan por separado del motor JS — un UA
+"moderno" no garantiza que el decoder acepte `blob:` como fuente de video. A diferencia
+del Samsung viejo, acá el resto del pipeline (Cache API, disco, imágenes) funciona
+perfecto — es un problema acotado a `blob:` + `<video>` en este hardware puntual, no un
+navegador generalmente incompatible. **Decisión operativa (no se investigó más a
+fondo):** esta unidad la administra el propio equipo, así que se resolvió al nivel de
+contenido — sus playlists van a ser siempre solo-imágenes, sin video. Mismo techo de
+hardware que el Samsung viejo; el camino para un cliente real con este modelo seguiría
+siendo box/stick Android + APK, no vale la pena parchear el visor web por un solo
+dispositivo de este tipo.
 
 **`performance.memory` no es confiable en estos navegadores.** Tanto el LG como el Samsung
 nuevo reportaron memoria "usada/total" idéntica y estática durante horas (en un caso,
