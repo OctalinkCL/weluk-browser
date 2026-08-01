@@ -68,6 +68,10 @@ function forceRefresh() {
   location.reload()
 }
 
+function activateFullscreen() {
+  document.documentElement.requestFullscreen?.().catch(() => {})
+}
+
 async function refreshCacheList() {
   cachedUrls.value = (await listCachedUrls()) ?? []
   storageEstimate.value = await estimateStorage()
@@ -178,6 +182,7 @@ async function disconnect() {
 
     <div class="actions">
       <button @click="forceRefresh">Forzar refresh</button>
+      <button @click="activateFullscreen">Pantalla completa</button>
       <button @click="refreshCacheList">Listar cache</button>
       <button @click="clearCache">Vaciar cache</button>
     </div>
