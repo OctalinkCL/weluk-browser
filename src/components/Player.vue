@@ -341,13 +341,10 @@ function subscribeToScreen() {
     })
 }
 
-function handleDisconnected() {
-  // Desconexión voluntaria desde el propio overlay: el DELETE ya llega por el canal
-  // postgres_changes y dispara el mismo camino, pero untrack() de una vez evita
-  // reportarse "en línea" en el panel durante el instante entre el click y el unmount.
-  screenChannel?.untrack()
-  emit('disconnected')
-}
+// handleDisconnected() vivía acá: lo llamaba el botón "Disconnect" del overlay, que se
+// eliminó por seguridad (ver Overlay.vue y docs/04-incidentes.md § Segundo análisis de
+// seguridad). El visor ya no inicia desconexiones — solo reacciona a las que vienen del
+// panel, por el canal de subscribeToScreen(), que sigue emitiendo 'disconnected' igual.
 
 function toggleOverlay() {
   overlayVisible.value = !overlayVisible.value
@@ -401,7 +398,6 @@ watch(currentItem, () => {
       :playlist-name="playlistName"
       :media-status="mediaStatus"
       @close="overlayVisible = false"
-      @disconnected="handleDisconnected"
     />
   </div>
 </template>

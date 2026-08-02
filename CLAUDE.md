@@ -53,16 +53,19 @@ ln -s ../weluk-docs docs   # requiere weluk-docs clonado como hermano de este re
   `screen-${device_uuid}` existente, re-emitido tras cada reconexión. Ver
   `docs/03-contratos.md § 5`.
 - **Disconnect/delete**: escucha `event: '*'` (no solo `'UPDATE'`) y trata `DELETE` igual
-  que un disconnect; `loadScreen()` usa `.maybeSingle()`; "Disconnect" del overlay llama a
-  la RPC `disconnect_own_screen`, no un `UPDATE` directo. Ver
-  `docs/04-incidentes.md § Fix de seguridad` y `§ Eliminar pantalla en un solo paso`.
+  que un disconnect; `loadScreen()` usa `.maybeSingle()`. **El visor no inicia desconexiones
+  — solo reacciona a las del panel.** El botón "Disconnect this screen" del overlay se
+  eliminó en la v1.3 (2 agosto 2026) por seguridad: llamaba a una RPC ejecutable por `anon`
+  cuyo único parámetro es públicamente legible. Ver `docs/04-incidentes.md § Segundo análisis
+  de seguridad` y `docs/03-contratos.md § 4 — Disconnect y delete`.
 - **Overlay de diagnóstico** (`Overlay.vue`): identidad de pantalla + playlist actual,
   `device_uuid`, versión del build (`APP_VERSION` en `src/lib/version.js`, incrementada a
   mano en cada cambio relevante desplegado — no atada a `package.json`, permite confirmar
   en una TV real, sin devtools, que corre el build esperado), resolución, memoria (heap
   usado/total — **no confiable en TVs**, ver `docs/01-arquitectura.md`), user agent,
-  refresh manual, fullscreen, listar/vaciar caché, disconnect real, y estado del caché
-  (contexto seguro, API disponible, bytes descargados en la sesión, hits, cuota).
+  refresh manual, fullscreen, listar/vaciar caché, y estado del caché (contexto seguro, API
+  disponible, bytes descargados en la sesión, hits, cuota). **Es de solo diagnóstico: no
+  escribe nada en la base.**
 - **`duration_seconds` para video**: el avance ya no depende solo del evento nativo
   `@ended` — respeta la duración configurada desde el panel si está seteada.
 
