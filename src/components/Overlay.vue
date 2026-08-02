@@ -1,6 +1,5 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { supabase } from '../lib/supabase'
 import { APP_VERSION } from '../lib/version'
 import {
   cacheApiAvailable,
@@ -17,11 +16,9 @@ const props = defineProps({
   mediaStatus: { type: String, default: null },
 })
 
-const emit = defineEmits(['close', 'disconnected'])
+const emit = defineEmits(['close'])
 
 const cachedUrls = ref(null)
-const disconnecting = ref(false)
-const disconnectError = ref(null)
 
 const screenResolution = `${window.screen.width}x${window.screen.height}`
 const userAgent = navigator.userAgent
@@ -87,34 +84,14 @@ onMounted(async () => {
   storageEstimate.value = await estimateStorage()
 })
 
-async function disconnect() {
-  disconnecting.value = true
-  disconnectError.value = null
-
-  // El UPDATE directo sobre screens ya no tiene permiso para anon (la policy abierta
-  // using(true) with check(true) se reemplazó por esta función, que solo puede tocar
-  // la fila del device_uuid pasado). returns setof screens, así que data sigue
-  // llegando como array de filas.
-  const { data, error } = await supabase.rpc('disconnect_own_screen', {
-    p_device_uuid: props.deviceUuid,
-  })
-
-  if (error) {
-    disconnectError.value = error.message
-    disconnecting.value = false
-    return
-  }
-
-  if (!data || data.length === 0) {
-    disconnectError.value = 'El servidor no aplicó el cambio: no se encontró la pantalla.'
-    disconnecting.value = false
-    return
-  }
-
-  // El cambio se aplicó de verdad. No esperamos el eco de Realtime (no vuelve de
-  // forma fiable para el propio cliente que hizo el UPDATE) — emitimos directo.
-  emit('disconnected')
-}
+// Acá vivía "Disconnect this screen", que llamaba a la RPC disconnect_own_screen.
+// Se eliminó por seguridad (2 agosto 2026): esa RPC era ejecutable por `anon` y su
+// único parámetro es el device_uuid, que cualquiera puede leer porque el SELECT de
+// `anon` sobre `screens` está abierto. Con la anon key (pública, va en este bundle)
+// se podían enumerar y borrar las pantallas de todos los clientes sin login.
+// Desvincular ahora se hace desde el panel ("Eliminar"), que sí valida ownership real
+// vía RLS; el DELETE llega igual por Realtime y el visor vuelve a pairing solo.
+// Ver docs/04-incidentes.md § Segundo análisis de seguridad.
 </script>
 
 <template>
@@ -191,11 +168,6 @@ async function disconnect() {
       <li v-if="cachedUrls.length === 0">Cache vacío.</li>
       <li v-for="url in cachedUrls" :key="url">{{ url }}</li>
     </ul>
-
-    <button class="disconnect" :disabled="disconnecting" @click="disconnect">
-      {{ disconnecting ? 'Desconectando…' : 'Disconnect this screen' }}
-    </button>
-    <p v-if="disconnectError" class="error">{{ disconnectError }}</p>
   </div>
 </template>
 
@@ -278,26 +250,4 @@ async function disconnect() {
   word-break: break-all;
 }
 
-.disconnect {
-  display: block;
-  width: 100%;
-  margin-top: 1.5rem;
-  padding: 0.6rem;
-  background: #400;
-  color: #fff;
-  border: 1px solid #a33;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.disconnect:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.error {
-  color: #f66;
-  font-size: 0.8rem;
-  margin-top: 0.5rem;
-}
 </style>
